@@ -25,6 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 from PIL import Image, ImageDraw
+import geodesy
 
 import fast
 import heightmap
@@ -237,50 +238,80 @@ def grid_affine(lat, lon):
     return f
 
 
-def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None, extra=()):
+def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None, extra=(), left_hand=False):
     """idx (material per sample, [row, col], as classify gives it) with the roads of feats_list (the
     "roads" Features of the cells around) drawn in at their width: ROAD_MATERIAL by surface kind.
     lat / lon: the samples' positions; square: m between samples; urban_fn: as roads.road_specs (the
     same widths as the drawn roads); extra: [(lat (k,), lon (k,), roads.Spec)] more roads (a tunnel's open
     sections, grading.Grader.open_tunnels). Pure (a new array)."""
     h, w = idx.shape
+    feats_list = tuple(feats_list)
     to_px = grid_affine(lat, lon)
-    layers = {k: Image.new("L", (w, h), 0) for k in ROAD_ORDER}
+    frame = geodesy.EnuFrame(float(np.mean(lat)), float(np.mean(lon)), 0.)
+    lon0, lon1, lat0, lat1 = float(lon.min()), float(lon.max()), float(lat.min()), float(lat.max())
+    metres_lon = 111320. * max(.05, math.cos(math.radians(float(np.mean(lat)))))
+    sections = roadsmod._join_sections(frame, feats_list)
+    # Keep sub-cell edge coverage before reducing to the physics lattice. Rounding a
+    # diagonal directly on that lattice can discard a cell touched by the pavement.
+    raster_scale = 4
+    layers = {k: Image.new("L", (w*raster_scale, h*raster_scale), 0) for k in ROAD_ORDER}
+    layers["__verge"] = Image.new("L", (w*raster_scale, h*raster_scale), 0)
     draws = {k: ImageDraw.Draw(im) for k, im in layers.items()}
     lawn = Image.new("L", (w, h), 0)            # divided roads' medians (under the roads: they paint over it)
     lawn_draw = ImageDraw.Draw(lawn)
-    verge = Image.new("L", (w, h), 0)           # a bare strip beside roads without sidewalks (VERGE_M)
-    verge_draw = ImageDraw.Draw(verge)
     seen = set()
 
+    def ribbon(pts, width, kind):
+        # Use the rendered ribbon's cross-sections, including mitres and asymmetric
+        # shoulders. A thick Pillow line rounds both its centre and width to whole
+        # pixels; at the 2 m physics resolution that left grass beneath paved edges.
+        cross = (pts[:, 3:5] if pts.shape[1] == 5 else
+                 roadsmod.offset_polyline(pts, 1.)[:, :2]-pts[:, :2])
+        offset = cross*(np.asarray(width)[..., None]/2)
+        edges = np.vstack([pts[:, :2]+offset, pts[:, :2]-offset])
+        la, lo, _ = frame.enu_to_geodetic(edges[:, 0], edges[:, 1], np.tile(pts[:, 2], 2))
+        c, r = to_px(lo, la)
+        if c.max() < -2 or c.min() > w+2 or r.max() < -2 or r.min() > h+2:
+            return
+        pixels = np.rint(np.c_[c, r]*raster_scale+(raster_scale-1)/2).astype(np.int64)
+        left, right = np.split(pixels, 2)
+        # Rasterize only quads touching this block. Complete source roads remain
+        # available for fitting, but distant pavement must not consume paint time.
+        low = np.minimum(left, right)
+        high = np.maximum(left, right)
+        visible = ((np.maximum(high[:-1], high[1:]) >= 0).all(1)
+                   & (np.minimum(low[:-1], low[1:]) <= [w*raster_scale, h*raster_scale]).all(1))
+        for k in np.flatnonzero(visible):
+            draws[kind].polygon([tuple(p) for p in (left[k], left[k+1], right[k+1], right[k])], fill=255)
+
     def line(x, y, spec, aisle):
-        width, kind = spec.width, roadsmod.surface_material_kind(spec)
+        if len(x) < 2:
+            return
+        import roadlanes
+        # Keep a generous allowance for lane tapers, asymmetric shoulders, sidewalks
+        # and supersampled material coverage. Reject only whole ribbons outside the
+        # block, before expensive joined normals and pavement-width interpolation.
+        margin = max(100., 2*roadlanes.grading_spec(spec).width + 2*spec.walk + 2*square)
+        if (np.max(x) < lon0-margin/metres_lon or np.min(x) > lon1+margin/metres_lon or
+                np.max(y) < lat0-margin/110540. or np.min(y) > lat1+margin/110540.):
+            return
+        width = spec.width
+        pts = np.column_stack(frame.geodetic_to_enu(y, x, 0.))
+        pts, width = roadlanes.pavement(spec, roadsmod._with_cross(pts, sections), frame, left_hand)
         if aisle:
             width += 2 * AISLE_STALLS_M         # the stalls either side (parking.aisle_spots): no grass under cars
-        walks = roadsmod.has_sidewalks(spec)
-        if walks:
+        if roadsmod.has_sidewalks(spec):
             width += 2 * (spec.walk + square)   # the sidewalks (+ a sample: tufts at the outer edge): grass grew up
                                                 # through them (ground cover is the terrain's: Lauterbrunnen, Baltimore
                                                 # 2026-10-15)
-        # rounded up to an odd number of samples: a 9 m road was painted 8 m wide (round(4.5) = 4), and an even width
-        # sits half a sample off the line (PIL), its one edge a metre short
-        px = max(1, int(math.ceil(width / square - 1e-9)))
-        px += 1 - px % 2
-        # to a millionth of a sample: PIL floors, and a line on a sample row came out 63.99999999996 on Windows (its
-        # libm, the affine fit), drawn a sample north of where it lands on Linux
-        c, r = (np.round(v, 6) for v in to_px(x, y))
-        vx = 0 if walks else 2 * int(math.ceil(VERGE_M / square))     # (even: the verge stays odd, centred)
-        if c.max() < -px - vx or c.min() > w + px + vx or r.max() < -px - vx or r.min() > h + px + vx:
-            return
-        pts = list(zip(c.tolist(), r.tolist()))
-        draws[kind].line(pts, fill=255, width=px, joint="curve")
-        if vx:
-            verge_draw.line(pts, fill=255, width=px + vx, joint="curve")
+        ribbon(pts, width, roadsmod.surface_material_kind(spec))
+        if not roadsmod.has_sidewalks(spec):
+            ribbon(pts, width+2*(VERGE_M+square), "__verge")
 
     for feats in feats_list:
         if feats is None or len(feats) == 0:
             continue
-        specs = roadsmod.road_specs(feats, urban_fn, widths)
+        specs = roadsmod.road_specs(feats, urban_fn, widths, left_hand)
         for i in range(len(feats)):
             fid = str(feats.ids[i])
             if specs[i] is None or fid in seen:
@@ -301,14 +332,31 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None, e
                     c, r = to_px(off[:, 0], off[:, 1])
                     lawn_draw.line(list(zip(c.tolist(), r.tolist())), fill=255,
                                    width=max(1, int(round(mw / square))), joint="curve")
+    # Choose the same complete approach from neighbouring cells as the visible mesh,
+    # and paint each taper at its actual varying width instead of its maximum width.
+    for band in roadsmod.projected_ramp_layout(frame, feats_list, left_hand, urban_fn, widths)[3]:
+        for p, widths_, appearance, kind in roadsmod.auxiliary_ground(band):
+            ribbon(p, widths_, kind)
+    e, n, _ = frame.geodetic_to_enu([lat0, lat0, lat1, lat1], [lon0, lon1, lon0, lon1], 0.)
+    box = (float(min(e)), float(min(n)), float(max(e)), float(max(n)))
+    for corner in roadsmod.ground_corners(frame, feats_list, urban_fn, widths, left_hand, box=box):
+        polygons = ([corner['fill']] if corner.get('fill') is not None else []) + corner.get('fills', [])
+        for fill in polygons:
+            la, lo, _ = frame.enu_to_geodetic(fill[:, 0], fill[:, 1], fill[:, 2])
+            c, r = to_px(lo, la)
+            pixels = np.rint(np.c_[c, r]*raster_scale+(raster_scale-1)/2).astype(np.int64)
+            draws['paved'].polygon([tuple(p) for p in pixels], fill=255)
     for la, lo, spec in extra:
         line(np.asarray(lo), np.asarray(la), spec, False)
     out = idx.copy()
     out[np.asarray(lawn) > 0] = LAWN
-    v = np.asarray(verge) > 0
-    out[v & np.isin(out, VERGE_FROM)] = VERGE
+    verge = np.asarray(layers["__verge"].resize((w,h), Image.Resampling.BOX)) > 0
+    out[verge & np.isin(out, VERGE_FROM)] = VERGE
     for k in ROAD_ORDER:
-        m = np.asarray(layers[k]) > 0
+        # Supersampling includes squares touched by the pavement, without adding
+        # another full sample ring of asphalt over the bare roadside verge.
+        coverage = layers[k].resize((w, h), Image.Resampling.BOX)
+        m = np.asarray(coverage) > 0
         out[m] = ROAD_MATERIAL[k]
     return out
 
@@ -333,6 +381,20 @@ def _road_segments(frame, x0, y0, size, w, h, feats_list, urban_fn=None, widths=
     kinds = list(PHOTO_ROAD_RGBA)
     segs, hws, kind = [], [], []
     seen = set()
+    import roadlanes
+    feats_list = tuple(feats_list)
+    def add(points, widths_, surface_kind):
+        # Keep 1.6's terrain renderer. Short segments carry the same taper widths
+        # and asymmetric pavement centres as the marking / physics geometry.
+        c = (points[:, 0] - x0) * px_m
+        r = (y0 + size - points[:, 1]) * px_m
+        half = np.broadcast_to(np.asarray(widths_, float) * px_m / 2, (len(c),))
+        reach = float(half.max())
+        if len(c) < 2 or c.max() < -reach or c.min() > w + reach or r.max() < -reach or r.min() > h + reach:
+            return
+        segs.append(np.stack([c[:-1], r[:-1], c[1:], r[1:]], axis=1))
+        hws.append((half[:-1] + half[1:]) / 2)
+        kind.append(np.full(len(c) - 1, kinds.index(surface_kind), np.uint8))
     for feats in feats_list:
         if feats is None or len(feats) == 0:
             continue
@@ -343,16 +405,15 @@ def _road_segments(frame, x0, y0, size, w, h, feats_list, urban_fn=None, widths=
             if sp is None or fid in seen or sp.kind not in PHOTO_ROAD_RGBA:
                 continue
             seen.add(fid)
-            hw = sp.width * px_m / 2
             for ring in roadsmod.ground_parts(feats, i):
-                e, n, _ = frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
-                c = (np.asarray(e) - x0) * px_m
-                r = (y0 + size - np.asarray(n)) * px_m
-                if len(c) < 2 or c.max() < -hw or c.min() > w + hw or r.max() < -hw or r.min() > h + hw:
-                    continue
-                segs.append(np.stack([c[:-1], r[:-1], c[1:], r[1:]], axis=1))
-                hws.append(np.full(len(c) - 1, hw))
-                kind.append(np.full(len(c) - 1, kinds.index(sp.kind), np.uint8))
+                p = np.column_stack(frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0))
+                p = roadsmod.densify(p, 2.)
+                pw = roadlanes.pavement_widths(sp, p, frame)
+                centre = roadsmod.pavement_line(sp, p)
+                add(centre, pw, sp.kind)
+    for band in roadsmod.projected_ramp_layout(frame, feats_list, urban_fn=urban_fn, widths=widths)[3]:
+        for p, widths_, _, road_kind in roadsmod.auxiliary_ground(band):
+            add(p, widths_, road_kind)
     if not segs:
         return None
     return np.concatenate(segs), np.concatenate(hws), np.concatenate(kind)
@@ -364,11 +425,32 @@ def photo_roads(rgb, frame, x0, y0, size, feats_list, urban_fn=None, widths=None
     (earthfast.paint_lines, PHOTO_ROAD_RGBA). Pure (a new array)."""
     fast.require(49, "roads in the ground")
     h, w = rgb.shape[:2]
+    feats_list = tuple(feats_list)
     got = _road_segments(frame, x0, y0, size, w, h, feats_list, urban_fn, widths)
     if got is None:
         return rgb
     colors = np.array([PHOTO_ROAD_RGBA[k] for k in PHOTO_ROAD_RGBA], np.float32)
-    return fast._ef.paint_lines(np.ascontiguousarray(rgb, np.uint8), *got, colors)
+    out = fast._ef.paint_lines(np.ascontiguousarray(rgb, np.uint8), *got, colors)
+    mask = _corner_mask(frame, x0, y0, size, w, h, feats_list, urban_fn, widths)
+    colour = np.asarray(PHOTO_ROAD_RGBA['paved'][:3])
+    opacity = mask[..., None].astype(np.float32) / 255 * PHOTO_ROAD_RGBA['paved'][3]
+    return np.rint(out.astype(np.float32)*(1-opacity) + colour*opacity).astype(np.uint8)
+
+
+def _corner_mask(frame, x0, y0, size, w, h, feats, urban_fn=None, widths=None):
+    """Antialiased paved return polygons; all three terrain representations use these."""
+    scale = 2
+    mask = Image.new('L', (w*scale, h*scale), 0)
+    draw = ImageDraw.Draw(mask)
+    for corner in roadsmod.ground_corners(frame, feats, urban_fn, widths, box=(x0, y0, x0+size, y0+size)):
+        polygons = ([corner['fill']] if corner.get('fill') is not None else []) + corner.get('fills', [])
+        for points in polygons:
+            x = (points[:, 0]-x0)*w/size
+            y = (y0+size-points[:, 1])*h/size
+            if x.max() < 0 or x.min() > w or y.max() < 0 or y.min() > h:
+                continue
+            draw.polygon(list(zip((x*scale).tolist(), (y*scale).tolist())), fill=255)
+    return np.asarray(mask.resize((w, h), Image.Resampling.LANCZOS))
 
 
 def _square_roads(frame, x0, y0, size, surface):
@@ -420,6 +502,7 @@ def road_mask(frame, x0, y0, size, px, surface, widths=None):
     colors = np.array([(255.0, 255.0, 255.0, 1.0 if k in ROAD_MASK_KINDS else 0.0) for k in PHOTO_ROAD_RGBA],
                       np.float32)
     out = fast._ef.paint_lines(np.zeros((px, px, 3), np.uint8), *got, colors)[..., 0]
+    out = np.maximum(out, _corner_mask(frame, x0, y0, size, px, px, feats, surface.urban, widths))
     return out if out.any() else None
 
 
@@ -697,7 +780,15 @@ class Surface:
                 complete = False
                 continue
             try:
-                out.append(self.md.cell(key, layers=("roads",), kind="background").layers.get("roads"))
+                feats = self.md.cell(key, layers=("roads",), kind="background").layers.get("roads")
+                context = getattr(feats, '_road_context', None)
+                missing = [k for k in context.required(feats) if not self.md.has(k, 'roads')] if context else []
+                if missing:
+                    for neighbour in missing:
+                        self._queue(neighbour, ('roads',))
+                    complete = False
+                    continue       # never turn ground painting into a synchronous network request
+                out.append(feats)
             except Exception as e:      # an unreadable cache file: like a missing one
                 log.debug("surface: roads of %s: %s: %s", key, type(e).__name__, e)
                 complete = False
@@ -732,11 +823,13 @@ class Surface:
         out = np.zeros(lat.shape, np.uint8)
         complete = True
         for key in mapcells.cells_for_points(lat, lon):
-            r = self._cached(key)
             lon0, lat0, lon1, lat1 = key.bounds()
             inside = (lat >= lat0) & (lat < lat1) & (lon >= lon0) & (lon < lon1)
             if not inside.any():
                 continue
+            # Sparse road samples can span a large box. Do not read/queue every
+            # land-cover cell between them when none of its pixels are requested.
+            r = self._cached(key)
             if r is None:
                 complete = complete and not self._is_queued(key)
                 continue

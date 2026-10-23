@@ -3,7 +3,8 @@ roads, joined to Overture's road segments by their OpenStreetMap way id (the use
 have more info about the roads, lane count, road types").
 
 Overture's transportation theme has no lane count (removed in 2024, not back in schema v2.0.0) and few widths, but
-98.6 % of its segments come from OpenStreetMap and keep the way id (sources[1].record_id "w<id>@<version>"). OSM US's
+its OpenStreetMap geometry sources keep way ids ("w<id>@<version>") and optional distance ranges. Route relation
+attribution can precede them, so the first source is not necessarily a road way. OSM US's
 Layercake publishes every OSM highway as one GeoParquet file (https://layercake.openstreetmap.us/layers/highways/,
 ODbL, ~29 GB, 2,467 row groups, spatially clustered, rebuilt about weekly), with the tags as columns and a bbox struct.
 Like overture.py, only what a cell needs is read, through rangeread (netfetch's limits, the block cache), with DuckDB
@@ -18,6 +19,7 @@ A layer of its own is not needed: mapdata joins the tags into the roads layer wh
 read the same cell file, so a road's lanes and width agree everywhere). Unreachable: the cell keeps no tags and the
 roads use their width guesses (roads.carriageway), as before.
 """
+import json
 import logging
 import os
 import re
@@ -132,14 +134,14 @@ class OsmTags:
             except OSError:
                 pass
 
-    def cell(self, bounds, kind="demand"):
+    def cell(self, bounds, kind="demand", source_ids=()):
         """({way id: {column: value}} of the OSM highways whose bbox touches bounds (lon0, lat0, lon1, lat1), [the
         highway=raceway ways among them: {"id", "coords" (k, 2) lon/lat, tags...}]): one pass for both. A version that
         changed under the reads is dropped and the cell asked once more on the new one."""
         for attempt in (0, 1):
             etag, remote = self.version(kind)
             try:
-                return self._cell(remote, bounds, kind)
+                return self._cell(remote, bounds, kind, source_ids)
             except rangeread.Changed:
                 if attempt:
                     raise
@@ -192,7 +194,7 @@ class OsmTags:
                 if stat(g, "xmin", 0, -1e9) <= lon1 and stat(g, "xmax", 1, 1e9) >= lon0
                 and stat(g, "ymin", 0, -1e9) <= lat1 and stat(g, "ymax", 1, 1e9) >= lat0]
 
-    def _cell(self, remote, bounds, kind):
+    def _cell(self, remote, bounds, kind, source_ids=()):
         lon0, lat0, lon1, lat1 = bounds
         rd = self._reader
         files = {PATH: remote}
@@ -211,8 +213,12 @@ class OsmTags:
             box = (f"bbox.xmin <= {lon1!r} AND bbox.xmax >= {lon0!r} AND bbox.ymin <= {lat1!r} "
                    f"AND bbox.ymax >= {lat0!r}")
             cols = ", ".join(f"{expr} AS \"{name}\"" for name, expr in COLUMNS.items())
-            rows = con.execute(f"""SELECT id, highway = 'raceway', file_row_number, {cols}
-                FROM read_parquet({uri}, file_row_number = true) WHERE ({only}) AND {box}""").fetchall()
+            # Full Overture features can include ways beyond this cell. Resolve their
+            # exact IDs from the already-fetched row groups, without fetching a corridor.
+            requested = ','.join(str(int(w)) for w in sorted(set(source_ids)))
+            selection = f'({box}) OR id IN ({requested})' if requested else box
+            rows = con.execute(f"""SELECT id, highway = 'raceway' AND ({box}), file_row_number, {cols}
+                FROM read_parquet({uri}, file_row_number = true) WHERE ({only}) AND ({selection})""").fetchall()
             race = [r[2] for r in rows if r[1]]
             got = []
             if race:            # (rare: the raceways' own columns and geometry, of their row groups only)
@@ -312,17 +318,52 @@ def _linestring(wkb):
     return np.frombuffer(wkb, dtype=end + "f8", count=2 * n, offset=9).reshape(n, 2).astype(np.float64)
 
 
+def source_ids(feats):
+    sources = feats.attrs.get('osm_sources', ())
+    return {wid for value in sources for ref in json.loads(str(value) or '[]')
+            if (wid := way_id(ref.get('record_id'))) is not None}
+
+
 def join(feats, tags):
-    """The tags of each road feature (its source record's way id) as attrs columns: floats (NaN where unknown) for
-    FLOATS, text ('' where unknown) for TEXTS. feats: an Overture roads Features (attrs src_record)."""
+    """Join physical geometry ways, retaining their scoped lanes in a combined road.
+
+    Other scalar attrs use a representative source (NaN / '' where unknown).
+    src_record remains the fallback for older fixtures and standalone OSM roads.
+    """
     import mapgeom as mg
     recs = feats.attrs.get("src_record")
     n = len(feats)
-    ids = [way_id(str(recs[i])) if recs is not None else None for i in range(n)]
+    sources = feats.attrs.get('osm_sources')
+    selected, lane_sections = [], []
+    for i in range(n):
+        refs = json.loads(str(sources[i]) or '[]') if sources is not None else []
+        if not refs:
+            refs = [{'record_id': str(recs[i]), 'between': None}] if recs is not None else []
+        parts = []
+        for ref in refs:
+            wid = way_id(ref.get('record_id'))
+            value = tags.get(wid, {})
+            a, b = ref.get('between') or (0., 1.)
+            if value and 0 <= a < b <= 1:
+                parts.append((float(a), float(b), wid, value))
+        parts.sort(key=lambda p: (p[0], p[1], p[2]))
+        # Scalar consumers keep a representative known value; road cross-sections
+        # retain every tagged range, including changes inside a single Overture feature.
+        value = dict(max(parts, key=lambda p: p[1]-p[0])[3]) if parts else {}
+        known = [p for p in parts if p[3].get('lanes') is not None and
+                 float(p[3]['lanes']).is_integer() and 1 <= p[3]['lanes'] <= 12]
+        if known and not (value.get('lanes') is not None and 1 <= value['lanes'] <= 12):
+            value['lanes'] = max(known, key=lambda p: p[1]-p[0])[3]['lanes']
+        selected.append(value)
+        lane_sections.append(json.dumps([
+            dict(start=a, end=b, lanes=int(v['lanes']), way=w) for a, b, w, v in parts
+            if v.get('lanes') is not None and float(v['lanes']).is_integer() and 1 <= v['lanes'] <= 12
+        ], separators=(',', ':')))
     for c in FLOATS:
         feats.attrs["osm_" + c if not c.startswith("osm_") else c] = np.array(
-            [float(tags.get(w, {}).get(c, np.nan)) if w is not None else np.nan for w in ids], np.float64)
+            [float(v.get(c, np.nan)) for v in selected], np.float64)
     for c in TEXTS:
         feats.attrs[c if c.startswith("osm_") else "osm_" + c] = mg.text_column(
-            [str(tags.get(w, {}).get(c, "")) if w is not None else "" for w in ids])
+            [str(v.get(c, "")) for v in selected])
+    feats.attrs['osm_lane_sections'] = mg.text_column(lane_sections)
     return feats

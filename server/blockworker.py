@@ -13,6 +13,7 @@ far_geometry(...) (the far-tile workers, the same state) are its jobs. warm_q (a
 lon, [mapcells.CellKey]), the latest list replacing the earlier one.
 """
 import logging
+import contextlib
 import os
 import queue
 import threading
@@ -62,6 +63,7 @@ class _State:
         self.lock = threading.Lock()
         self.want = []              # (grader, cell key) to plan, most urgent first
         self.cv = threading.Condition()
+        self.terrain_busy = 0
 
     def anchor(self, aid, lat, lon):
         """(Grader or None, ChunkCache) of an anchor; only the last few anchors are kept."""
@@ -181,7 +183,8 @@ def _warm_loop():
         with _s.cv:
             job = None
             while job is None:
-                job = next(((g, k) for g, k in _s.want if not g.planned(k)), None)
+                if not _s.terrain_busy:
+                    job = next(((g, k) for g, k in _s.want if not g.planned(k)), None)
                 if job is None:
                     _s.cv.wait()
         try:
@@ -205,6 +208,40 @@ def ground(frame, la, lo, z):
 
 
 def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None):
+    road_checkpoint(out_dir, aid)
+    cv = getattr(_s, 'cv', None)
+    if cv is not None:
+        with cv:
+            _s.terrain_busy += 1
+    try:
+        urgent = getattr(_s.dem, 'urgent', None)
+        # Process-built blocks must have the same urgent elevation lane as the
+        # first block made in earthd. Otherwise they queue behind speculation.
+        with urgent() if urgent is not None else contextlib.nullcontext():
+            return _build_captured(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name)
+    finally:
+        if cv is not None:
+            with cv:
+                _s.terrain_busy -= 1
+                cv.notify_all()
+
+
+def _build_captured(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None):
+    md = getattr(_s, "md", None) or getattr(getattr(_s, "surface", None), "md", None)
+    refresh = getattr(md, "refresh_geometry_epoch", None)
+    if refresh is not None:
+        refresh()
+    capture = getattr(md, "capture_complete", None)
+    with capture() if capture is not None else contextlib.nullcontext([md is None]) as complete:
+        info = _build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name)
+    info["_cacheComplete"] = complete[0]
+    info["_sourceMissing"] = sorted(getattr(complete, "missing", ()))
+    info["_demComplete"] = getattr(_s.dem, "generation_complete", True)
+    info["_sourcesFailed"] = getattr(complete, "failed", False)
+    return info
+
+
+def _build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None):
     """Build and write the block (heightmap PNG name in out_dir, its surface masks beside it, and the
     .ter ter_name if given). Returns the info dict of earthd's make_heightmap (without seconds / zoom /
     base)."""
@@ -235,6 +272,7 @@ def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None)
                                              (cx - half, cy - half, cx + half, cy + half))
     info = heightmap.generate(frame, gen, os.path.join(out_dir, name), cx, cy, q=q, size=size, keep=keep,
                               chunks=chunks)
+    road_checkpoint(out_dir, aid)
     stages = {"heights": time.perf_counter() - t0, "grading": grade_s[0]}
     idx = None
     if _s.surface is not None:
@@ -255,6 +293,7 @@ def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None)
         info["layers"] = surfacemod.write_masks(idx[::-1], out_dir, name[:-4])
         info["surfaceComplete"] = complete and roads_complete
     if ter_name is not None:
+        road_checkpoint(out_dir, aid)
         t1 = time.perf_counter()
         idx = _tunnel_holes(aid, frame, elev, keep, cx, cy, idx, info, g)
         info["ter"], mats = surfacemod.write_ter(out_dir, ter_name, keep["qgrid"], idx)
@@ -326,7 +365,30 @@ def terrain_patch(aid, lat, lon, zoom, box, path):
 
 
 def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, buildings=False, left_hand=False,
-               mph=True, q=None):
+               mph=True, q=None, with_complete=False):
+    road_checkpoint(out_dir, aid)
+    refresh = getattr(_s.md, "refresh_geometry_epoch", None)
+    if refresh is not None:
+        refresh()
+    capture = getattr(_s.md, "capture_complete", None)
+    with capture() if capture is not None else contextlib.nullcontext([False]) as complete:
+        result = _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift,
+                             buildings, left_hand, mph, q)
+    status = {"complete": complete[0], "missing": sorted(getattr(complete, "missing", ())),
+              "demComplete": getattr(_s.dem, "generation_complete", True),
+              "sourcesFailed": getattr(complete, "failed", False)}
+    return (*result, status) if with_complete and result is not None else result
+
+
+def road_checkpoint(out_dir, aid):
+    """A teleport retires queued road/terrain jobs and stops running ones between stages."""
+    if os.path.exists(os.path.join(out_dir, f"cancel_roads_{aid}")):
+        from concurrent.futures import CancelledError
+        raise CancelledError("generation superseded by teleport")
+
+
+def _roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, buildings=False, left_hand=False,
+                mph=True, q=None):
     """earthd.Server.build_roads_tile here (road-tile pool): the anchor's road tile (tx, ty) built and
     written; returns roads.write_tile's (vfs path, chunks). In the server's process its Python made up
     ~80 % of the main process's busy threads (in-game profile 2026-10-13): the block photos and far
@@ -334,10 +396,12 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
     import parking as parkingmod
     import roadmesh as roadmeshmod
     import roads as roadsmod
+    road_checkpoint(out_dir, aid)
     g, _ = _s.anchor(aid, lat, lon)
     frame = geodesy.EnuFrame(lat, lon)
     cells = [_s.md.cell(k, layers=("roads",), kind="demand").layers.get("roads")
              for k in roadsmod.cells_of_tile(frame, tx, ty)]
+    road_checkpoint(out_dir, aid)
 
     def elev(la, lo):           # the physics ground (lifted under roads: grading.ROAD_LIFT)
         z = ground(frame, la, lo, _s.dem.sample(la, lo, zoom))
@@ -357,6 +421,7 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
                                              lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)),
                                              decks=_tile_decks(bridges, cells, tx, ty))
         town = buildingsmod.coverage(items) < buildingsmod.POLES_COVERAGE
+    road_checkpoint(out_dir, aid)
     rwalls = []
     ctx = []
     box = roadsmod.tile_bbox(tx, ty)
@@ -371,6 +436,7 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
                                  tunnels=tunnels, walls=rwalls,
                                  ground=lambda x, y: roadmeshmod.drawn_ground(frame, drawn, np.c_[x, y], q),
                                  terrain_paint=getattr(_s, "surface", None) is not None)
+    road_checkpoint(out_dir, aid)
     if _s.airports is not None:         # runway markings, drawn by the road mesh like the lane lines
         chunks += _s.airports.tile_chunks(frame, tx, ty, elev, roadsmod.tile_bbox)
     x0, y0, _, _ = roadsmod.tile_bbox(tx, ty)
@@ -394,6 +460,7 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
         bld = buildingsmod.road_tile(frame, tx, ty, _s.md,
                                      lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)), None, None,
                                      items)
+    road_checkpoint(out_dir, aid)
     return roadsmod.write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks if sidewalks else None, mesh, dmesh,
                                bld, props, wires, park, tunnel_mesh=tmesh)
 

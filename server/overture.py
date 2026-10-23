@@ -78,12 +78,16 @@ THEME_LICENCES = {
 }
 
 _SRC = "sources[1].dataset AS src_dataset, sources[1].record_id AS src_record"
+# Route relations can precede the actual road ways (I-69 near Coldwater, for example).
+# Keep the geometry sources and their fractional ranges, not the first attribution entry.
+_ROAD_SOURCES = "CAST(to_json(list_filter(sources, lambda s: s.dataset = 'OpenStreetMap' " \
+                "AND starts_with(s.record_id, 'w') AND COALESCE(s.property, '') IN ('', '/geometry'))) AS VARCHAR)"
 _NAME = "names.\"primary\" AS name"
 _TAGS = "CAST(to_json(source_tags) AS VARCHAR) AS tags"
 LAYERS = {
     "roads": dict(theme="transportation", type="segment", clip=False,
-                  cols=f"subtype, class, subclass, {_NAME}, {_SRC}",
-                  text=("subtype", "class", "subclass", "name", "src_dataset", "src_record"),
+                  cols=f"subtype, class, subclass, {_NAME}, {_SRC}, {_ROAD_SOURCES} AS osm_sources",
+                  text=("subtype", "class", "subclass", "name", "src_dataset", "src_record", "osm_sources"),
                   extra="road_flags, speed_limits, connectors, road_surface, width_rules, level_rules, "
                         "subclass_rules, access_restrictions",
                   rules={"surface": ("road_surface", "value", "text"),

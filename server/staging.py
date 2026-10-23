@@ -91,6 +91,21 @@ def replace(tmp, path):
 REPLACE_WAITS = (0.02, 0.05, 0.1, 0.25, 0.5)    # s between the tries of replace_cached (~0.9 s in all)
 
 
+def retry_read(read, *args, **kwargs):
+    """Retry a short Windows sharing violation without turning good cached data into a miss.
+
+    Missing/corrupt files keep their normal handling. A sustained access denial is
+    raised to the caller; replacing or downloading that same file will not fix it.
+    """
+    for wait in REPLACE_WAITS + (None,):
+        try:
+            return read(*args, **kwargs)
+        except PermissionError:
+            if wait is None:
+                raise
+            time.sleep(wait)
+
+
 def replace_cached(tmp, path):
     """replace(tmp, path) for a cache file whose content is the same whoever writes it (a download, a decoded or built
     copy of one). On Windows a file another thread or process has open, or memory-mapped, cannot be replaced

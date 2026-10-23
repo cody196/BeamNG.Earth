@@ -136,6 +136,9 @@ class FakeHelper:
             while True:
                 h, _ = peerwork.recv_msg(s)
                 self.jobs.append(h["tile"])
+                gate = getattr(self, "reply_gate", None)
+                if gate is not None:
+                    gate.wait(5)
                 d, blobs = peerwork.built_msg(built(len(self.jobs)))
                 peerwork.send_msg(s, {"ok": True, "built": d}, blobs)
         except (ConnectionError, OSError, ValueError):
@@ -148,13 +151,19 @@ class PoolTest(unittest.TestCase):
 
     def test_helper_used_then_local(self):
         helper, local = FakeHelper(), LocalPool()
+        helper.reply_gate = threading.Event()
         pool = peerwork.SharedFarPool(local, [("127.0.0.1", helper.port)], {"roads": True}, None)
         for _ in range(100):
             if pool.free.qsize() == 2:
                 break
             threading.Event().wait(0.02)
         self.assertEqual(pool.remote_slots(), 2, "earthd keeps this many more far tiles in flight")
-        futs = [pool.submit(far_geometry, *self.args(i)) for i in range(4)]
+        try:
+            futs = [pool.submit(far_geometry, *self.args(i)) for i in range(4)]
+        finally:
+            # Test concurrent capacity; a fast reply is allowed to free a slot
+            # before a later submit and must not make this assertion timing-dependent.
+            helper.reply_gate.set()
         out = [f.result(10) for f in futs]
         remote = [o for o in out if isinstance(o, farfield.Built)]
         self.assertEqual(len(remote), 2, "the helper's two slots")

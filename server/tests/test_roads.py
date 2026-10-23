@@ -351,8 +351,9 @@ class BuildTileTest(unittest.TestCase):
                 self.assertGreater(abs(y - 100), sec_w / 2 + sw - 0.6, (x, y))
         yc = next(c["n"][0][1] for c in by[roads.LOOK["paved"]["m"]] if abs(c["n"][0][1] - 100) < 1)
         ys = sorted({round(c["n"][0][1], 3) for c in by["line_yellow"]})
-        self.assertTrue(any(abs(y - (yc + roads.CENTRE["gap"])) < 0.01 for y in ys) and
-                        any(abs(y - (yc - roads.CENTRE["gap"])) < 0.01 for y in ys), (yc, ys))
+        # Maryland uses the US fallback: two 0.35 m stripes with a 0.12 m clear gap.
+        self.assertTrue(any(abs(y - (yc + .235)) < 0.01 for y in ys) and
+                        any(abs(y - (yc - .235)) < 0.01 for y in ys), (yc, ys))
 
     def test_sidewalk_mesh_runs_and_drains(self):
         import tempfile
@@ -713,10 +714,21 @@ class FakeConn:
         self.sent.append(msg)
 
 
+async def drain_tracker(tr, pose, expected):
+    """Wait for actual completion, including the road pump and slower Windows threads."""
+    deadline = asyncio.get_running_loop().time()+5.
+    while not expected <= (tr.sent | getattr(tr, "empty", set())) or tr.building:
+        if asyncio.get_running_loop().time() >= deadline:
+            raise AssertionError("tracker did not finish the requested tiles")
+        pose()
+        await asyncio.sleep(.005)
+
+
 class TrackerTest(unittest.TestCase):
     def run_poses(self, poses):
         conn = FakeConn()
         tr = roads.Tracker()
+        self.addCleanup(tr.close)
         built = []
 
         def build(aid, tx, ty):
@@ -729,6 +741,8 @@ class TrackerTest(unittest.TestCase):
                 for _ in range(40):             # several poses at one place: every tile gets built
                     tr.on_pose(conn, aid, x, y, loop, build)
                     await asyncio.sleep(0.01)
+                await drain_tracker(tr, lambda: tr.on_pose(conn, aid, x, y, loop, build),
+                                    set(roads.tiles_near(x, y, roads.SEND_M)))
         asyncio.run(go())
         return conn, tr, built
 
@@ -744,6 +758,7 @@ class TrackerTest(unittest.TestCase):
         # once: an empty one now stays done while within reach, a failed one waits TILE_RETRY_S
         conn = FakeConn()
         tr = roads.Tracker()
+        self.addCleanup(tr.close)
         built = []
         fail = {(0, 0)}
 
@@ -758,6 +773,8 @@ class TrackerTest(unittest.TestCase):
             for _ in range(40):
                 tr.on_pose(conn, 1, 0.0, 0.0, loop, build)
                 await asyncio.sleep(0.01)
+            await drain_tracker(tr, lambda: tr.on_pose(conn, 1, 0., 0., loop, build),
+                                set(roads.tiles_near(0., 0., roads.SEND_M))-fail)
         asyncio.run(go())
         near = set(roads.tiles_near(0, 0, roads.SEND_M))
         counts = {k: built.count(k) for k in near}
@@ -773,6 +790,7 @@ class TrackerTest(unittest.TestCase):
         # (GitHub #91) network errors are expected and retried quietly, but a tile that never comes left no trace
         conn = FakeConn()
         tr = roads.Tracker()
+        self.addCleanup(tr.close)
 
         def build(aid, tx, ty):
             if (tx, ty) == (0, 0):
@@ -784,6 +802,8 @@ class TrackerTest(unittest.TestCase):
             for _ in range(10):
                 tr.on_pose(conn, 1, 0.0, 0.0, loop, build)
                 await asyncio.sleep(0.01)
+            await drain_tracker(tr, lambda: tr.on_pose(conn, 1, 0., 0., loop, build),
+                                set(roads.tiles_near(0., 0., roads.SEND_M))-{(0, 0)})
         with self.assertLogs("earthd.roads", "WARNING") as cm:
             for _ in range(roads.TILE_FAILS_WARN):
                 tr.retry.clear()
@@ -831,6 +851,7 @@ class TrackerTest(unittest.TestCase):
     def test_at_speed_the_path_ahead_is_built_and_kept(self):
         conn = FakeConn()
         tr = roads.Tracker()
+        self.addCleanup(tr.close)
         built = []
 
         def build(aid, tx, ty):
@@ -842,6 +863,8 @@ class TrackerTest(unittest.TestCase):
             for _ in range(80):
                 tr.on_pose(conn, 1, 128.0, 128.0, loop, build, vel=(100.0, 0.0))
                 await asyncio.sleep(0.01)
+            await drain_tracker(tr, lambda: tr.on_pose(conn, 1, 128., 128., loop, build, vel=(100., 0.)),
+                                roads.wanted_tiles(128., 128., 100., 0.))
         asyncio.run(go())
         want = roads.wanted_tiles(128.0, 128.0, 100.0, 0.0)
         self.assertEqual(set(built), want, "every wanted tile built once")
@@ -870,6 +893,7 @@ class TrackerTest(unittest.TestCase):
         for make, kind in ((roads.Tracker, "roads"), (vegetation.Tracker, "veg")):
             conn, built = FakeConn(), []
             tr = make()
+            self.addCleanup(tr.close)
             cam = (5000.0, 0.0)
 
             async def go(view, n=60):
@@ -878,6 +902,9 @@ class TrackerTest(unittest.TestCase):
                     tr.on_pose(conn, 1, 0.0, 0.0, loop, lambda aid, tx, ty: (built.append((tx, ty)), (f"/p/{tx}_{ty}", 1))[1],
                                view=view)
                     await asyncio.sleep(0.01)
+                pose = lambda: tr.on_pose(conn, 1, 0., 0., loop,
+                    lambda aid, tx, ty: (built.append((tx, ty)), (f"/p/{tx}_{ty}", 1))[1], view=view)
+                await drain_tracker(tr, pose, car | seen if view else car)
             send = roads.SEND_M if kind == "roads" else vegetation.SEND_M
             car, seen = set(roads.tiles_near(0, 0, send)), set(roads.tiles_near(*cam, send))
             asyncio.run(go(cam))
@@ -895,6 +922,7 @@ class TrackerTest(unittest.TestCase):
         for make, kind in ((roads.Tracker, "roads"), (vegetation.Tracker, "veg")):
             conn, built = FakeConn(), []
             tr = make()
+            self.addCleanup(tr.close)
             focus = (4000.0, 0.0, 320.0, True)
 
             async def go(foci, n=60):
@@ -903,6 +931,9 @@ class TrackerTest(unittest.TestCase):
                     tr.on_pose(conn, 1, 0.0, 0.0, loop, lambda aid, tx, ty: (built.append((tx, ty)), (f"/p/{tx}_{ty}", 1))[1],
                                foci=foci)
                     await asyncio.sleep(0.01)
+                pose = lambda: tr.on_pose(conn, 1, 0., 0., loop,
+                    lambda aid, tx, ty: (built.append((tx, ty)), (f"/p/{tx}_{ty}", 1))[1], foci=foci)
+                await drain_tracker(tr, pose, car | near if foci else car)
             send = roads.SEND_M if kind == "roads" else vegetation.SEND_M
             car = set(roads.tiles_near(0, 0, send))
             near = set(roads.tiles_near(4000.0, 0.0, min(send, 320.0 + roads.TILE / 2)))

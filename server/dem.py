@@ -177,6 +177,9 @@ class Dem:
         # (z, x, y) -> the provider that served the tile ("mapterhorn" / "aws-terrarium"; None: no
         # data, zeros), for the data credits (credits.py). A few bytes per tile ever loaded.
         self.served = {}
+        # Profiles/height chunks can retain a temporary fallback after a failed
+        # download. Do not bake those into a persistent generated-geometry entry.
+        self.generation_complete = True
 
     def polar(self):
         """The polar caps' DEM (made on first use)."""
@@ -408,6 +411,7 @@ class Dem:
     def _partial(self):
         """This load used a stand-in (a failed fetch): its tile is not mirrored."""
         self._local.partial = True
+        self.generation_complete = False
 
     def _load_tile(self, key):
         """A decoded tile: from the mirror, else made (_make_tile) and, when it is all Mapterhorn's data as it will

@@ -273,7 +273,7 @@ const settingsSchema = [
   {
     name: "Download cache",
     items: [
-      { id: "cacheUsage", type: "info", name: "Download cache", desc: "Elevation and imagery the server downloaded and keeps on disk (~/.cache/beamng-earth), so revisited places load without downloading again: the space in use, the size limit and the number of files." },
+      { id: "cacheUsage", type: "info", name: "World data cache", desc: "Downloaded elevation, imagery and map data, plus reusable road geometry and completed graded terrain blocks. Shows disk usage, the size limit and file count. Generated geometry is reused when the location, coordinate frame and generation settings match." },
       { id: "cacheCapGb", type: "select", default: "20", name: "Download cache size", desc: "The most the download cache may use. Over the limit, the server removes the files used longest ago (every few minutes, down to 90 % of the limit); never what this session used in the last hour or the gravity model. Kept by the server for its next start.",
         options: [ { label: "5 GB", value: "5" }, { label: "10 GB", value: "10" }, { label: "20 GB", value: "20" }, { label: "50 GB", value: "50" }, { label: "Unlimited", value: "unlimited" } ] },
       { id: "cacheClear", type: "action", name: "Clear cache", desc: "Deletes the downloaded elevation and imagery (and the server's de-shadowing and colour-seam data). What this session used and the gravity model stay. Places are downloaded again when you visit them." },

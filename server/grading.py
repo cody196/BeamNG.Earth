@@ -331,6 +331,8 @@ def _add_cuts(frame, plans, elev):
 
 
 def _plan(xy, z, spec, abut=(False, False)):
+    import roadlanes
+    spec = roadlanes.grading_spec(spec)
     built = spec.kind in roadsmod.BUILT
     zs = smooth_profile(z, PROFILE_STEP, SIGMA_M if built else DIRT_SIGMA_M)
     # thin to VERTEX_STEP (the profile stays smooth between: linear in the grading pass)
@@ -340,7 +342,8 @@ def _plan(xy, z, spec, abut=(False, False)):
     width = max(spec.width, roadsmod.carriageway(spec.cls, spec.kind, True, None, spec.oneway)) if built else spec.width
     if spec.median:             # a divided road's carriageway: never over the other one
         width = max(spec.width, roadsmod.dual_cap(spec.median, width))
-    plan = Plan(xy[keep], zs[keep], width / 2 + shoulder(spec), abut, road_half=width / 2)
+    reach = width / 2 + abs(spec.bias)
+    plan = Plan(xy[keep], zs[keep], reach + shoulder(spec), abut, road_half=reach)
     plan.max_wall = wall_max_h(spec)
     return plan
 
@@ -379,6 +382,36 @@ def _twin_trimmed(secs):
                 k = np.flatnonzero(keep)
                 out[cov[a]] = (fid, spec, np.asarray(xy)[k[0]:k[-1] + 1], np.asarray(z)[k[0]:k[-1] + 1], kind)
     return out
+
+
+def _match_auxiliary_grades(plans, connections):
+    """An added highway lane shares the through road's graded approach height.
+
+    Sampling the raw hillside independently for an offset auxiliary lane left it
+    lower at a bridge abutment. Reuse only its connected mainline plans, after
+    their existing approach/underpass corrections, and ease back to the ramp as
+    it leaves the highway. No bridge profile or unrelated crossing is changed.
+    """
+    by_id = {}
+    for fid, plan in plans:
+        if ':aux' not in fid:
+            by_id.setdefault(fid, []).append(plan)
+    for fid, plan in plans:
+        if ':aux' not in fid:
+            continue
+        ramp = fid.split(':aux', 1)[0]
+        lines = [(roadsmod._with_cross(np.c_[p.xy, p.z], {}), p.road_half) for mid in connections.get(ramp, ())
+                 for p in by_id.get(mid, ())]
+        if not lines:
+            continue
+        q, half = roadsmod._nearest_road(np.c_[plan.xy, plan.z], lines)
+        distance = np.linalg.norm(q[:, :2]-plan.xy, axis=1)
+        # Entire auxiliary cross-section stays level with the road it widens.
+        # Once it diverges, a smooth lateral fade preserves the native ramp grade.
+        t = np.clip((distance-half-plan.road_half-1.)/15., 0., 1.)
+        blend = 1.-t*t*(3.-2.*t)
+        plan.z = plan.z+blend*(q[:, 2]-plan.z)
+        plan.cut = None  # the old independent hillside cut no longer describes this lane
 
 
 class Grader:
@@ -443,6 +476,12 @@ class Grader:
                         parts.append((r, specs[i]))
                         ids.append(str(feats.ids[i]))
                         clipped.append(len(pieces) > 1 or r is not ring)
+                for aux_index, (ring, asp) in enumerate(roadsmod.auxiliary_parts(feats, i)):
+                    pieces = self._near_cell(np.asarray(ring, np.float64), box)
+                    for r in pieces:
+                        parts.append((r, asp))
+                        ids.append(str(feats.ids[i]) + ':aux' + str(aux_index))
+                        clipped.append(len(pieces) > 1 or r is not ring)
             pspecs = []
             abut = None
             if (ABUT_FILL_ON or APPROACH_ON) and parts:
@@ -469,6 +508,9 @@ class Grader:
                     self._lower_underpasses(key, plans)
                 except Exception as e:      # as the data has it rather than no grading
                     log.debug("grading: underpasses of %s: %s: %s", key, type(e).__name__, e)
+            layout = roadsmod.cached_ramp_layout(feats)
+            if layout is not None:
+                _match_auxiliary_grades(plans, layout[1][2])
             # a long road's piece (planned with CLIP_MARGIN_M of the road either side for its profile) kept only within
             # the cell's own box: every stretch of road in one cell's plans, once (overlapping pieces from neighbouring
             # cells counted a road up to 9 times, and every batch of points graded differently: patches of ground
@@ -1056,7 +1098,7 @@ def road_id(fid):
     """A stable integer id of a map feature (grade_points: a road never gives way to itself, though each map cell
     plans its own stretch of it: the Stelvio Pass's hairpins sank under their own other stretches, 2026-10-21)."""
     import zlib
-    return zlib.crc32(str(fid).encode()) & 0x7FFFFFFF
+    return zlib.crc32(str(fid).split(':aux', 1)[0].encode()) & 0x7FFFFFFF
 
 
 def grade_points(px, py, base, plans, lift=0.0):

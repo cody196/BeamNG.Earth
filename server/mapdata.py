@@ -68,6 +68,7 @@ import netfetch
 import overture
 import rangeread
 import staging
+import roadcontext
 
 log = logging.getLogger("earthd.mapdata")
 
@@ -78,7 +79,8 @@ VERSION = 2                     # pipeline version: bump when what a cell's laye
 # the "oneway" rule (Overture access_restrictions by heading)
 # roads 3: OpenStreetMap's lanes, width, sidewalk, maxspeed... joined by way id (osmtags.py)
 # roads 4: OpenStreetMap's raceways appended (osmtags.raceways, GitHub #143)
-LAYER_VERSIONS = {"roads": 4}
+# roads 5: resolve every scoped OSM geometry source, including roads whose first source is a route relation.
+LAYER_VERSIONS = {"roads": 5}
                                 # (2: clipped polygon pieces `own`ed by their cell, exact cell edges,
                                 # the exact no-area test of clipped rings)
 VECTOR_LAYERS = ("roads", "connectors", "buildings", "water", "land_use", "infrastructure", "building_parts")
@@ -212,6 +214,14 @@ def _raster_from(arrays):
                              meta["nodata"], list(meta["files"]))
 
 
+class SourceCapture(list):
+    """Completeness flag plus the nonblocking layers whose arrival invalidates a result."""
+    def __init__(self):
+        super().__init__([True])
+        self.missing = set()
+        self.failed = False
+
+
 class MapData:
     """See the module docstring. fetcher: the server's netfetch.Fetcher (None: one of its own);
     release: the Overture release (overture.RELEASE)."""
@@ -230,6 +240,11 @@ class MapData:
         self._mem = OrderedDict()           # (cell, layer) -> (decoded layer, provenance, bytes): cell()'s LRU
         self._mem_bytes = 0
         self._mem_lock = threading.Lock()
+        self.road_context = roadcontext.Context(lambda key: self.cell(key, layers=("roads",)).layers["roads"])
+        self._capture = threading.local()
+        self.geometry_epoch = 0
+        self._source_pending = set()
+        self._source_lock = threading.Lock()
 
     def close(self):
         self.pool.shutdown(wait=False)
@@ -268,7 +283,49 @@ class MapData:
     # --- one layer -------------------------------------------------------------------------------
     def has(self, key, layer):
         """True when the layer's file exists (not read: cheap enough for the event loop)."""
-        return os.path.exists(self.path(key, layer))
+        path = self.path(key, layer)
+        found = os.path.exists(path)
+        if not found:
+            if hasattr(self, "_source_lock"):
+                with self._source_lock:
+                    self._source_pending.add(path)
+            for capture in getattr(self._capture, "stack", ()):
+                capture[0] = False
+                capture.missing.add(path)
+        return found
+
+    def refresh_geometry_epoch(self):
+        """Invalidate urban-dependent in-memory plans after optional source data arrives.
+
+        Called between tile/block jobs, never once per feature/sample. Without this,
+        a regenerated disk entry could bake an earlier in-memory rural fallback.
+        """
+        with self._source_lock:
+            pending = tuple(self._source_pending)
+        arrived = {p for p in pending if os.path.exists(p)}
+        if arrived:
+            with self._source_lock:
+                self._source_pending.difference_update(arrived)
+                self.geometry_epoch += 1
+
+    @contextmanager
+    def capture_complete(self):
+        """A nonblocking source miss must not become a permanent generated mesh.
+
+        Surface's optional urban/lot reads can queue data and return a fallback. Even if
+        that download finishes before the mesh does, the mesh used the fallback. A
+        cached fallback records those missing paths and expires when they arrive.
+        Nested captures belong to this thread.
+        """
+        stack = getattr(self._capture, "stack", None)
+        if stack is None:
+            stack = self._capture.stack = []
+        complete = SourceCapture()
+        stack.append(complete)
+        try:
+            yield complete
+        finally:
+            stack.pop()
 
     def layer_provenance(self, key, layer):
         """The provenance dict of a cached layer file, None when it is not cached (or has none): only that entry of
@@ -295,11 +352,17 @@ class MapData:
     def _load(self, path):
         """A layer file's arrays, or None when it is missing or unreadable (truncated, a damaged
         deflate stream, another layout): a miss, rebuilt and written again."""
-        try:
+        def read():
             with np.load(path, allow_pickle=False) as z:
-                arrays = {k: z[k] for k in z.files}
+                return {k: z[k] for k in z.files}
+        try:
+            arrays = staging.retry_read(read)
         except FileNotFoundError:
             return None
+        except PermissionError:
+            # A locked cache entry is not corrupt. Do not duplicate its download
+            # and overwrite it while another worker/Windows still holds the file.
+            raise
         except Exception as e:      # zipfile.BadZipFile, zlib.error, ValueError, EOFError, OSError...
             log.warning("mapdata: unreadable %s (%s: %s): rebuilding it", path, type(e).__name__, e)
             return None
@@ -321,7 +384,19 @@ class MapData:
             osm = self._osm_pool().submit(self._osm_cell, key, kind) if layer == "roads" else None
             feats, sources = self.overture.query(layer, key, kind)
             if osm is not None:
-                feats = self._osm(feats, osm.result())
+                tags, ways = osm.result()
+                import osmtags
+                missing = osmtags.source_ids(feats)-tags.keys()
+                source = getattr(self, 'osmtags', None)
+                if missing and source is not None and tags:
+                    try:
+                        more, _ = source.cell(key.bounds(), kind, source_ids=missing)
+                        tags.update(more)
+                    except DEFERRED:
+                        if kind != 'demand': raise
+                    except Exception as e:
+                        log.debug('OSM source-way context of %s: %s', key, e)
+                feats = self._osm(feats, (tags, ways))
             ox, oy = mapcells.owner(feats.attrs.get("cx", np.zeros(0)), feats.attrs.get("cy", np.zeros(0)), key.z)
             feats.own = (ox == key.x) & (oy == key.y)
             if feats.clipped is not None:
@@ -358,6 +433,12 @@ class MapData:
                 if getattr(self, "osmtags", None) is None:
                     self.osmtags = osmtags.OsmTags(self.raw_dir, self.fetcher)
             return self.osmtags.cell(key.bounds(), kind)
+        except DEFERRED:
+            # A rejected background request must not permanently cache guessed lanes.
+            # Demand reads may still render offline; prefetch retries the whole road cell.
+            if kind != 'demand':
+                raise
+            return {}, []
         except Exception as e:          # optional: the roads go on with their guesses
             log.warning("mapdata: OSM road tags of %s: %s: %s", key, type(e).__name__, e)
             return {}, []
@@ -386,7 +467,8 @@ class MapData:
         arrays = self._load(path)
         if arrays is not None:
             return self._mirrored(key, layer, path, arrays), True
-        with self._key_lock(key, layer):
+        import cachelock
+        with self._key_lock(key, layer), cachelock.hold(path, self.cache_dir):
             arrays = self._load(path)           # another thread built it meanwhile
             if arrays is not None:
                 return self._mirrored(key, layer, path, arrays), True
@@ -524,6 +606,8 @@ class MapData:
             except Exception as e:
                 err = err or e
         if err is not None:
+            for capture in getattr(self._capture, "stack", ()):
+                capture[0], capture.failed = False, True
             raise err
         for layer in layers:                # assembled in the caller's order, whatever finished first
             if layer in mem:                # decoded before: shared (cell layers are never changed after loading)
@@ -536,6 +620,8 @@ class MapData:
                 en = arrays.pop("en.local", None)     # (the mirror's: this frame's, Features.localize)
                 if layer in VECTOR_LAYERS:
                     f = mapgeom.Features.from_arrays(layer, arrays, "")
+                    if layer == "roads":
+                        f._road_context = self.road_context
                     if en is not None and len(en) == len(f.lonlat):
                         f.en = en
                         cd.layers[layer] = f

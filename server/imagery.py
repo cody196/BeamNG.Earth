@@ -725,7 +725,7 @@ class Imagery:
         tiles at the zoom of `texel_m` m texels (the block's base photo) within `radius` m of the ENU
         points (the player's path, in order). Replaces the previous list (the player moved on)."""
         lazy = [s for s in self.chain if s.lazy]
-        if not lazy or not points:
+        if not lazy or len(points) == 0:
             return
         pts = np.asarray(points, float)
         lat, lon, _ = frame.enu_to_geodetic(pts[:, 0], pts[:, 1], np.zeros(len(pts)))

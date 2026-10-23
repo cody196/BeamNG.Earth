@@ -79,13 +79,33 @@ class DownloadAheadTest(unittest.TestCase):
         self.run_at(s, a, 50.0 + earthd.AHEAD_MOVE_M, 0.0, 30.0, 0.0)
         self.assertGreater(len(s.dem.asked), n)
 
-    def test_no_buildings_roads_only(self):
+    def test_no_buildings_roads_and_terrain_before_scenery(self):
         # (from PR #64) without buildings the road layer is still fetched ahead (the road tiles need it)
         s, a = server(), anchor()
         s.buildings = False
         self.run_at(s, a, 0.0, 0.0, 30.0, 0.0)
         self.assertTrue(s.dem.asked)
-        self.assertTrue(s.mapdata.cells and all(layers == ("roads",) for _, layers, _ in s.mapdata.cells))
+        self.assertTrue(s.mapdata.cells)
+        layers = [layers for _, layers, _ in s.mapdata.cells]
+        self.assertEqual(layers[0], ("roads",))
+        self.assertTrue(all("buildings" not in ls and "building_parts" not in ls for ls in layers))
+        self.assertTrue(any("landcover" in ls and "water" in ls for ls in layers))
+
+    def test_all_road_cells_precede_building_downloads(self):
+        s, a = server(), anchor()
+        self.run_at(s, a, 0., 0., 80., 0.)
+        layers = [ls for _, ls, _ in s.mapdata.cells]
+        last_road = max(i for i, ls in enumerate(layers) if "roads" in ls)
+        first_building = min(i for i, ls in enumerate(layers) if "buildings" in ls)
+        self.assertLess(last_road, first_building)
+
+    def test_prefetch_yields_when_dem_budget_is_deferred(self):
+        s, a = server(), anchor()
+        s.dem.prefetch = lambda keys: (0, True)
+        self.run_at(s, a, 0., 0., 80., 0.)
+        self.assertFalse(s.mapdata.cells)
+        self.assertEqual(s.ahead_stats["deferred"], 1)
+        self.assertFalse(s.ahead_busy)
 
 
 if __name__ == "__main__":

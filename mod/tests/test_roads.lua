@@ -3,6 +3,18 @@
 local dir = (arg[0]:match('^(.*)[/\\]') or '.')
 local T = dofile(dir .. '/testlib.lua')
 local S = dofile(dir .. '/stubs.lua')
+-- Windows os.clock can stay at zero across several synthetic frames. Give the
+-- stopwatch a deterministic advancing clock, as the game supplies with hptimer.
+local testMs = 0
+hptimer = function()
+  local last = testMs
+  return { stopAndReset = function()
+    testMs = testMs + 0.1
+    local dt = testMs - last
+    last = testMs
+    return dt
+  end }
+end
 
 -- DecalRoad methods roads.lua calls (not in the generic stub object)
 local realCreate = createObject
@@ -306,8 +318,14 @@ do
         { key = '2:-2_0', what = 'deck' } }
   T.check(roads.urgentWalk(q) == 3, 'urgent: the deck ahead within reach (not beside first, not behind)')
   T.check(roads.urgentWalk({ { key = '2:2_0', what = 'walkcol' } }) == nil, 'urgent: decks and tunnels only')
+  q = { { key = '2:2_0', what = 'bldcol' }, { key = '2:2_0', what = 'road' } }
+  T.check(roads.nextWalk(q) == 2, 'fast: nearby pavement before building imports')
+  T.check(roads.urgentWalk(q) == 2, 'fast: a late pavement mesh can use an urgent import')
+  q[#q + 1] = { key = '2:2_0', what = 'deck' }
+  T.check(roads.urgentWalk(q) == 3, 'urgent: bridge collision before pavement appearance')
   function car:getVelocity() return vec3(0, 0, 0) end
   roads.update(gov, 2)
+  T.check(roads.urgentWalk({ { key = '2:2_0', what = 'road' } }) == nil, 'standing: pavement uses the normal budget')
   q = { { key = '2:2_0' }, { key = '2:0_1' } }
   T.check(q[roads.nextWalk(q)].key == '2:0_1', 'standing: the nearer tile first')
   for _, k in ipairs({ '2_0', '0_1', '0_2', '-2_0', '0_0' }) do roads.onDrop({ anchorId = 2, key = k }) end

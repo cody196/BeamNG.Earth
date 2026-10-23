@@ -27,6 +27,7 @@ import earthd  # noqa: E402
 import farfield as ff  # noqa: E402
 import heightmap  # noqa: E402
 import imagery  # noqa: E402
+import netfetch  # noqa: E402
 import modsim  # noqa: E402
 from netclient import Client, FarState  # noqa: E402
 
@@ -63,6 +64,9 @@ class FakeImagery(imagery.Imagery):
     west of it); counts every load."""
 
     def __init__(self, cache_dir, chain=("usgs", "eox2023", "eox2016"), **kw):     # (no lazy NAIP: timing)
+        # Lazy imagery warming bypasses _load; keep that background path offline
+        # as well as the synthetic render path, including DetailBaseRefreshTest.
+        kw.setdefault('fetcher', netfetch.Fetcher(offline=True))
         super().__init__(cache_dir, chain, **kw)
         self.loads = 0
 
