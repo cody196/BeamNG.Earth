@@ -61,7 +61,7 @@ do
   T.check(#G.validFrom({ 'a', 'x' }, 1, { old }) == 1, 'an unknown node: cut')
 end
 
--- a graph update that keeps the AI's path ahead valid leaves the AI alone
+-- a graph update restores the path through the vehicle bridge, without a full driveUsingPath reset
 do
   local sent = {}
   local veh = { getPosition = function() return { x = 150, y = 0 } end,
@@ -72,9 +72,11 @@ do
   local saved = getPlayerVehicle
   getPlayerVehicle = function() return veh end
   G.afterGraph(keep, same)
-  T.check(#sent == 0, 'still valid: no new path for the AI')
+  T.check(#sent == 1 and sent[1]:find('beamngEarthAutodrive.setPath', 1, true)
+    and not sent[1]:find('driveUsingPath', 1, true), 'still valid: restore after the stock AI drops its old map')
   G.afterGraph(keep, { b = n(100, {}), c = n(200, {}) })
-  T.check(#sent == 1, 'a broken step: the AI gets the part that is left')
+  T.check(#sent == 2 and sent[2]:find('stop', 1, true) and not sent[2]:find('traffic', 1, true),
+    'a broken step: hold instead of abandoning the GPS route for traffic mode')
   getPlayerVehicle = saved
 end
 do -- the game's loaded graph keeps each edge on one node only (map.lua convertToSingleSided)
@@ -85,7 +87,8 @@ do -- the game's loaded graph keeps each edge on one node only (map.lua convertT
     c = { pos = P(100, 0), links = { b = { oneWay = false } } },
     d = { pos = P(150, 0), links = { c = { oneWay = true, inNode = 'd' } } },
   }
-  T.check(#G.validFrom({ 'a', 'b', 'c', 'd' }, 1, { one }) == 4, 'a step stored on either node is an edge')
+  T.check(#G.validFrom({ 'a', 'b', 'c' }, 1, { one }) == 3, 'a step stored on either node is an edge')
+  T.check(#G.validFrom({ 'a', 'b', 'c', 'd' }, 1, { one }) == 3, 'do not drive a one-way edge backwards')
   local f, t = G.edgeUnder(one, 70, 1, 1, 0)
   T.check(f == 'b' and t == 'c', 'the edge under the car, stored on its far node: ' .. tostring(f) .. tostring(t))
   f, t = G.edgeUnder(one, 70, 1, -1, 0)

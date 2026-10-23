@@ -1205,6 +1205,12 @@ local function serverHealthy()
 end
 
 M.serverHealthy = function() return serverHealthy() end
+-- A late terrain request does not invalidate the road and ground already under the car. Autodrive
+-- follows only the clipped graph and the edge guard still pauses before the loaded ground runs out.
+-- Disconnects/resyncs must still brake, because no further ground can be committed in that state.
+M.autodriveReady = function()
+  return net.isConnected() and st.sessionId ~= nil and st.block ~= nil and not st.resync
+end
 M.mpStatus = function() return mpanchor.status() end -- console: beamngEarth_core.mpStatus()
 
 -- The collidable area of the block in use (the anchor's, else the level-start flat block), or nil.

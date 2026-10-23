@@ -28,10 +28,13 @@ M.TAIL_M = 2000
 M.TAIL_STEP_M = 25
 -- Autodrive (the user, 2026-10-14: "get the car to auto drive along a gps route"; also a repeatable drive for the
 -- performance recordings): the player's car's own AI (vehicle ai.driveUsingPath) drives the graph part of the arrows'
--- path, in its lane, minding traffic, at the legal speed; given again with every new arrows' path, when the graph was
--- applied again (its nodes are new tables) and when the car has stood still for AUTO_STALL_S.
-M.AUTO_STALL_S = 6
-M.GRAPH_WAIT_S = 4      -- the longest a new path waits for the car's copy of the graph (then given anyway)
+-- path, in its lane, minding traffic, at the legal speed. The vehicle extension restores routes after map changes
+-- and appends newly loaded road without resetting the AI's speed/gearbox controls.
+M.AUTO_STALL_S = 45    -- allow traffic lights/queues before attempting recovery
+M.AUTO_LOOP_S = 20     -- moving this long without advancing along the route: recover, even above walking speed
+M.AUTO_PROGRESS_M = 10
+M.AUTO_LOOP_TRAVEL_M = 60
+M.AUTO_RECOVERY_LIMIT = 3
 M.AUTO_AGGRESSION = 0.3
 -- Safety: the AI brakes to a stop while the world server is away (no new ground or roads: an autodrive left on through
 -- server restarts drove off the loaded world and wrecked the car, 2026-10-14) and goes on when it is back; a car
@@ -55,8 +58,12 @@ local autoSerial = nil  -- the graph (navgraph applies) they were taken from
 local stillSince = nil
 local paused = false    -- the AI holds the car (world server away)
 local vehGraph = {}     -- vehicle id -> the game's map buildSerial when its mapmgr last took the graph
-local pathWait = nil    -- os.clock() since a path waits for the car to have the graph it was planned on
 local targetS = nil     -- the route distance of the arrows' target
+local commandId = 0
+local waiting = nil     -- 'route', 'graph', 'server' or nil
+local recovering = false
+local watch = nil       -- route progress and distance travelled, rather than speed alone
+local recoveries = 0
 
 -- Pure: the id and position {x, y, z} of the node in `nodes` (map.getMap().nodes: id -> { pos = {x, y, z} })
 -- nearest (tx, ty), and its distance; nil when there are none.
@@ -158,6 +165,7 @@ local function requestRoute(player)
   local b = d and M.compass(d.x, d.y)
   if c.requestRoute(nextId, player.lat, player.lon, dest.lat, dest.lon, b) then
     pendingId, lastRequest = nextId, os.clock()
+    return true
   end
 end
 
@@ -166,7 +174,13 @@ function M.setDestination(lat, lon, name)
   if not lat or not lon then return false end
   dest = { lat = lat, lon = lon, name = name }
   route, routeError, pendingId, enu, progress, info = nil, nil, nil, nil, 1, nil
-  routedTo, lastCheck, lastRequest = nil, -math.huge, -math.huge     -- plan and route at the next update
+  routedTo, lastCheck, lastRequest, targetS = nil, -math.huge, -math.huge, nil
+  watch, recoveries, recovering = nil, 0, false
+  if auto then
+    autoPath, autoSerial = nil, nil
+    local veh = playerVeh()
+    if veh then veh:queueLuaCommand(M.pauseCommand()) end
+  end
   return true
 end
 
@@ -181,7 +195,8 @@ function M.status()
   return { lat = dest.lat, lon = dest.lon, name = dest.name, dist = info and info.dist, bearing = info and info.bearing,
            remaining = info and info.remaining, eta = info and info.eta, routeVersion = route and route.version or 0,
            progress = progress, planning = pendingId ~= nil, routeError = routeError, pendingId = pendingId,
-           autodrive = auto, autoNodes = autoPath and #autoPath or nil, off = info and info.off, arrows = routedTo }
+           autodrive = auto, autoNodes = autoPath and #autoPath or nil, off = info and info.off, arrows = routedTo,
+           autoWaiting = waiting, autoRecoveries = recoveries }
 end
 
 -- The planned route for the map: { version, points = {{lat, lon}...}, dist, dur } or nil.
@@ -309,6 +324,34 @@ function M.aiCommand(ids, aggression)
     .. 'avoidCars = "on", aggression = ' .. string.format('%.2f', aggression or M.AUTO_AGGRESSION) .. '})'
 end
 
+local function currentMapSerial()
+  local m = rawget(_G, 'map')
+  local gm = m and m.getMap and m.getMap()
+  return gm and gm.buildSerial
+end
+
+function M.pauseCommand()
+  return 'if extensions.beamngEarthAutodrive then extensions.beamngEarthAutodrive.pause() else ai.setMode("stop") end'
+end
+
+function M.autoCommand(ids, final)
+  if not ids then
+    return 'if extensions.beamngEarthAutodrive then extensions.beamngEarthAutodrive.stop() else ai.setMode("disabled") end'
+  end
+  local q = {}
+  for i, id in ipairs(ids) do q[i] = string.format('%q', tostring(id)) end
+  commandId = commandId + 1
+  return 'extensions.load("beamngEarthAutodrive") extensions.beamngEarthAutodrive.setPath({' .. table.concat(q, ',')
+    .. '},' .. tostring(currentMapSerial()) .. ',' .. commandId .. ',' .. tostring(tonumber(M.speedOverride))
+    .. ',' .. tostring(M.AUTO_AGGRESSION) .. ',' .. tostring(final == true) .. ')'
+end
+
+function M.onAutodriveRejected(id)
+  if not auto or id ~= commandId then return end
+  autoPath, autoSerial, routedTo, waiting = nil, nil, nil, 'graph'
+  lastCheck = -math.huge
+end
+
 -- Pure: the edge data between nodes a and b, or nil. The game keeps each edge on one of its nodes only once a
 -- graph is loaded (map.lua convertToSingleSided): a path's step read as no edge half the time, and every rebuild
 -- of the graph cut the AI's path to a node behind the car (Lauterbrunnen 2026-10-15).
@@ -323,9 +366,9 @@ local function drivable(e, a)
   return not (type(e) == 'table' and e.oneWay and e.inNode ~= nil and e.inNode ~= a)
 end
 
--- Pure: the graph edge (from id, to id) the car at (px, py) heading (hx, hy) drives on: within 8 m, running its way.
-function M.edgeUnder(nodes, px, py, hx, hy)
-  local best, bd = nil, 8.0
+-- Pure: the forward road edge under the car, within 8 m (or its wider lane radius), on the same deck.
+function M.edgeUnder(nodes, px, py, hx, hy, pz)
+  local best, bd = nil, math.huge
   local function try(from, to, e)
     local a, b = nodes[from] and nodes[from].pos, nodes[to] and nodes[to].pos
     if not (a and b) or not drivable(e, from) then return end
@@ -333,9 +376,12 @@ function M.edgeUnder(nodes, px, py, hx, hy)
     local L = math.sqrt(dx * dx + dy * dy)
     if L > 0.1 and (dx * hx + dy * hy) / L > 0.5 then
       local t = math.max(0, math.min(1, ((px - a.x) * dx + (py - a.y) * dy) / (L * L)))
+      -- Parallel roads on different decks can share XY at an interchange.
+      if pz and a.z and b.z and math.abs(pz - (a.z + t * (b.z - a.z))) > 5 then return end
       local qx, qy = a.x + t * dx - px, a.y + t * dy - py
       local d = math.sqrt(qx * qx + qy * qy)
-      if d < bd then best, bd = { from, to }, d end
+      local radius = math.max(nodes[from].radius or 0, nodes[to].radius or 0)
+      if d < math.max(8, math.min(16, radius + 2)) and d < bd then best, bd = { from, to }, d end
     end
   end
   for id, n in pairs(nodes or {}) do
@@ -347,16 +393,36 @@ function M.edgeUnder(nodes, px, py, hx, hy)
   if best then return best[1], best[2] end
 end
 
+function M.startPath(ids, nodes, p, d)
+  local hl = math.sqrt(d.x * d.x + d.y * d.y)
+  if hl <= 0.1 then return {} end
+  -- Capture both results: a non-final function argument only returns its first value in Lua.
+  local a, b = M.edgeUnder(nodes, p.x, p.y, d.x / hl, d.y / hl, p.z)
+  if not a then return {} end
+  return M.joinStart(ids, a, b, nodes)
+end
+
 -- Pure: the AI's path starting on the edge (a -> b) under the car: the planner's path starts at the node nearest
 -- the car, which can be past a turn just ahead; the AI went straight for it, across the corner and into a pole
 -- (Fells Point 2026-10-14).
 function M.joinStart(ids, a, b, nodes)
   if not a or #ids == 0 then return ids end
+  if not b then return {} end
+  -- Drop graph points already passed, including a planner's detour back to an earlier node.
+  for i = 1, #ids - 1 do
+    if ids[i] == a and ids[i + 1] == b then
+      local out = {}
+      for j = i, #ids do out[#out + 1] = ids[j] end
+      return out
+    end
+  end
   local out = {}
   if ids[1] == b then
     out[1] = a
-  elseif ids[1] ~= a then
-    if not (nodes and M.edge(nodes, b, ids[1])) then return ids end
+  else
+    local e = nodes and M.edge(nodes, b, ids[1])
+    -- A path which cannot continue from the car's forward edge must be replanned, not chased backwards.
+    if not e or not drivable(e, b) then return {} end
     out[1], out[2] = a, b
   end
   for _, id in ipairs(ids) do out[#out + 1] = id end
@@ -375,10 +441,8 @@ function M.trace(kind, ids, nodes, p)
     table.concat(parts, ' ')))
 end
 
--- The vehicles' copies of the graph: the game sends a new graph to each vehicle a frame or more after it goes in
--- (map.request), and the stock AI given a path on the new graph before then indexed a step missing from its copy
--- ('edgeData' nil in graphpath.lua getEdgePositions): the vehicle's Lua stopped and the car ran straight off the
--- road into a pole (Lauterbrunnen 2026-10-15, twice).
+-- Map receipt diagnostics. Path safety is enforced against the vehicle's actual graph by its bridge,
+-- rather than trusting the GE serial observed when a delayed receipt hook arrives.
 function M.onVehicleMapmgrUpdate(id)
   local m = rawget(_G, 'map')
   local gm = m and m.getMap and m.getMap()
@@ -393,20 +457,15 @@ function M.vehicleHasGraph(veh)
   return vehGraph[veh:getId()] == serial
 end
 
+local function holdRoute(veh, reason)
+  if waiting ~= reason or autoPath then veh:queueLuaCommand(M.pauseCommand()) end
+  autoPath, autoSerial, waiting = nil, nil, reason
+end
+
 local function driveArrowsPath(gm, nodes)
   local veh = playerVeh()
-  if not veh or not gm.routePlanner then return end
-  if not M.vehicleHasGraph(veh) then
-    local now = os.clock()
-    if not pathWait then
-      pathWait = now
-      veh:queueLuaCommand('mapmgr.requestMap()')     -- (answered only when its copy is out of date)
-    end
-    if now - pathWait < M.GRAPH_WAIT_S then return end
-    M.graphWaitsTimedOut = (M.graphWaitsTimedOut or 0) + 1
-  end
-  pathWait = nil
-  local ids = M.pathNodes(gm.routePlanner.path)
+  if not veh or not gm.routePlanner or recovering then return end
+  local ids = M.startPath(M.pathNodes(gm.routePlanner.path), nodes, veh:getPosition(), veh:getDirectionVector())
   -- the planner's path can be older than the graph (planned before the last apply): a step that is no edge now
   -- disabled the AI's Lua (ai.lua getEdgeLaneConfig, Lauterbrunnen 2026-10-15). The valid part is driven and the
   -- route planned again at the next check
@@ -415,13 +474,23 @@ local function driveArrowsPath(gm, nodes)
     ids, routedTo = valid, nil
     M.pathCuts = (M.pathCuts or 0) + 1
   end
-  local p, d = veh:getPosition(), veh:getDirectionVector()
-  local hl = math.sqrt(d.x * d.x + d.y * d.y)
-  if hl > 0.1 then ids = M.joinStart(ids, M.edgeUnder(nodes, p.x, p.y, d.x / hl, d.y / hl), nodes) end
-  if #ids < 2 then return end
-  veh:queueLuaCommand(M.aiCommand(ids))
-  M.trace('path', ids, nodes, p)
-  autoPath, autoSerial, stillSince = ids, graphSerial(), nil
+  if #ids < 2 then
+    -- A transient empty arrows path must not replace a usable driving route or start roaming.
+    local old = autoPath and M.startPath(autoPath, nodes, veh:getPosition(), veh:getDirectionVector()) or {}
+    old = M.validFrom(old, 1, { nodes })
+    if #old < 2 then holdRoute(veh, 'route') end
+    routedTo = nil
+    return
+  end
+  if autoPath and routedTo ~= 'final' then
+    local old = M.validFrom(M.startPath(autoPath, nodes, veh:getPosition(), veh:getDirectionVector()), 1, { nodes })
+    local same = #old > #ids
+    for i = 1, #ids do if old[i] ~= ids[i] then same = false; break end end
+    if same then ids = old end -- a momentarily shorter local target is not a new destination
+  end
+  veh:queueLuaCommand(M.autoCommand(ids, routedTo == 'final'))
+  M.trace('path', ids, nodes, veh:getPosition())
+  autoPath, autoSerial, waiting = ids, graphSerial(), nil
 end
 
 -- Pure: the index k of the path edge (ids[k] -> ids[k+1]) nearest (px, py) in nodes (positions), or nil.
@@ -444,10 +513,12 @@ end
 
 -- Pure: ids[k ..] as far as each step is an edge in every one of the graphs (lists of nodes tables).
 function M.validFrom(ids, k, graphs)
+  if not ids or not ids[k] then return {} end
   local out = { ids[k] }
   for i = k, #ids - 1 do
     for _, nodes in ipairs(graphs) do
-      if not M.edge(nodes, ids[i], ids[i + 1]) then return out end
+      local e = M.edge(nodes, ids[i], ids[i + 1])
+      if not e or not drivable(e, ids[i]) then return out end
     end
     out[#out + 1] = ids[i + 1]
   end
@@ -462,36 +533,26 @@ function M.beforeGraph(oldNodes)
   local veh = playerVeh()
   if not veh then return nil end
   local p = veh:getPosition()
-  local k = M.pathIndexAt(autoPath, oldNodes, p.x, p.y)
-  if not k then return nil end
-  return { ids = M.validFrom(autoPath, k, { oldNodes }), full = #autoPath - k + 1 }
+  local ids = M.startPath(autoPath, oldNodes, p, veh:getDirectionVector())
+  ids = M.validFrom(ids, 1, { oldNodes })
+  return { ids = ids, full = #ids }
 end
 
--- ... and applied (newNodes: the game's map now): the AI gets the part of its path valid in both graphs at once,
--- before the new map reaches the vehicle; with less than two nodes left it drives the lanes on its own until the next
--- check gives it the route again.
+-- ... and applied: load the vehicle's map and restore its remaining GPS path together. Even an unchanged
+-- list needs restoring: stock ai.updateGFX discards currentRoute when mapmgr replaces its mapData object.
 function M.afterGraph(keep, newNodes)
   local veh = playerVeh()
   if not keep or not veh or not newNodes then return end
   local ids = M.validFrom(keep.ids, 1, { newNodes })
-  -- the AI's whole path ahead is still a path of the new graph: left alone (each new path resets the AI: the
-  -- gearbox's "arcade" note, and right after one it swerved onto a sidewalk into a pole, Lauterbrunnen 2026-10-15)
-  if #ids == keep.full and #ids == #keep.ids then
-    M.graphUntouched = (M.graphUntouched or 0) + 1
-    autoSerial = graphSerial() + 1    -- (navgraph counts this apply right after: autoKeep must not re-path for it)
-    return
-  end
-  -- broken: the AI keeps the part valid in both graphs (its copy is still the old one); the full route on the new
-  -- graph follows once the car has it (driveArrowsPath waits). A path planned on the new graph here crashed the
-  -- AI's Lua (a step missing from the vehicle's copy, 2026-10-15)
   local p = veh:getPosition()
   M.trace('keep', ids, newNodes, p)
   if #ids >= 2 then
-    veh:queueLuaCommand(M.aiCommand(ids))
+    veh:queueLuaCommand(M.autoCommand(ids, routedTo == 'final'))
+    autoPath, autoSerial, waiting = ids, graphSerial() + 1, nil
   else
-    veh:queueLuaCommand('ai.setMode("traffic")')
+    holdRoute(veh, 'route')
   end
-  autoPath, routedTo = ids, nil        -- the full route again at the next check
+  if #ids < keep.full then routedTo = nil end
   M.graphKeeps = (M.graphKeeps or 0) + 1
 end
 
@@ -505,7 +566,15 @@ local function setArrows(key, target, tail, nodes)
   if pcall(gm.setPath, target, { clearPathOnReachingTarget = false }) then
     routedTo, arrowsSerial = key, serial
     -- (not before the route is in: the AI would set off on its own way toward the destination)
-    if auto and route ~= nil and not paused then pcall(driveArrowsPath, gm, nodes) end    -- before the tail: the AI drives the graph part only
+    if auto and route ~= nil and not paused then
+      local ok, err = pcall(driveArrowsPath, gm, nodes) -- before the visual tail: AI drives real graph edges only
+      if not ok then
+        local veh = playerVeh()
+        if veh then holdRoute(veh, 'route') end
+        routedTo = nil
+        if log then log('W', 'beamngEarth', 'Autodrive path: ' .. tostring(err)) end
+      end
+    end
     if tail then pcall(appendTail, gm, tail.e, tail.s, tail.z) end
     return true
   end
@@ -515,13 +584,14 @@ function M.setAutodrive(on)
   on = on and true or false
   if on == auto then return auto end
   auto = on
-  autoPath, autoSerial, stillSince, paused, pathWait = nil, nil, nil, false, nil
+  autoPath, autoSerial, stillSince, paused = nil, nil, nil, false
+  waiting, watch, recoveries, recovering = nil, nil, 0, false
   if on then
     routedTo = nil                       -- the arrows (and the AI's path) set again at the next check
     lastCheck = -math.huge
   else
     local veh = playerVeh()
-    if veh then veh:queueLuaCommand(M.aiCommand(nil)) end
+    if veh then veh:queueLuaCommand(M.autoCommand(nil)) end
   end
   return auto
 end
@@ -533,8 +603,7 @@ local function damage(veh)
   return o and tonumber(o.damage) or 0
 end
 
--- Autodrive kept going: the path given again when the graph was applied anew or the car stands still; paused while the
--- world server is away, ended when the car is wrecked.
+-- Retry a path after a graph rejection/hold; brake for a disconnected world, end for severe damage.
 local function autoKeep(nodes, now)
   if not auto then return end
   local veh = playerVeh()
@@ -545,9 +614,10 @@ local function autoKeep(nodes, now)
     return
   end
   local c = core()
-  local healthy = not (c and c.serverHealthy) or c.serverHealthy()
+  local ready = c and (c.autodriveReady or c.serverHealthy)
+  local healthy = not ready or ready()
   if not healthy then
-    if not paused then veh:queueLuaCommand('ai.setMode("stop")') end
+    if not paused then holdRoute(veh, 'server') end
     paused, stillSince = true, nil
     return
   elseif paused then
@@ -556,10 +626,43 @@ local function autoKeep(nodes, now)
   local v = veh.getVelocity and veh:getVelocity()
   local speed = v and math.sqrt(v.x * v.x + v.y * v.y) or 0
   if speed < 1 then stillSince = stillSince or now else stillSince = nil end
-  if pathWait and M.vehicleHasGraph(veh) then routedTo = nil end     -- the path that waited: given now
-  if (autoPath and autoSerial ~= graphSerial()) or (stillSince and now - stillSince > M.AUTO_STALL_S) then
+  if waiting or (autoPath and autoSerial ~= graphSerial()) then
     routedTo = nil
   end
+end
+
+-- Detect a loop by route progress AND distance driven. Speed alone cannot distinguish a circle from a drive.
+-- Recovery holds the car while a route from its current position/heading is requested; failures are bounded.
+local function watchProgress(here, player, now)
+  if not auto or paused or recovering then return end
+  if not watch then watch = { best = here, since = now, travel = 0, x = player.x, y = player.y } end
+  local moved = math.sqrt((player.x - watch.x) ^ 2 + (player.y - watch.y) ^ 2)
+  watch.x, watch.y = player.x, player.y
+  watch.travel = watch.travel + moved
+  if here >= watch.best + M.AUTO_PROGRESS_M then
+    watch.best, watch.since, watch.travel, recoveries = here, now, 0, 0
+  end
+  local loop = now - watch.since >= M.AUTO_LOOP_S and watch.travel >= M.AUTO_LOOP_TRAVEL_M
+  local stuck = stillSince and now - stillSince >= M.AUTO_STALL_S
+  if pendingId or not (loop or stuck) then return end
+  recoveries = recoveries + 1
+  if recoveries > M.AUTO_RECOVERY_LIMIT then
+    M.setAutodrive(false)
+    if ui_message then pcall(ui_message, 'Autodrive off: unable to find a drivable route from here', 8, 'beamngEarthGps') end
+    return
+  end
+  local veh = playerVeh()
+  if veh then holdRoute(veh, 'route') end
+  routedTo, stillSince, watch = nil, nil, nil
+  recovering = requestRoute(player) == true
+end
+
+local function refreshLead()
+  local veh = playerVeh()
+  local v = veh and veh.getVelocity and veh:getVelocity()
+  local speed = v and math.sqrt(v.x * v.x + v.y * v.y) or 0
+  -- Extend before braking for the temporary endpoint: stopping distance plus three update intervals.
+  return math.max(2 * M.RETARGET_M, speed * speed / 5 + 3 * M.CHECK_S * speed + 80)
 end
 
 -- Every frame (anchor: the current geodesy anchor; player: {x, y, lat, lon}): the route kept to the destination.
@@ -568,6 +671,8 @@ function M.update(anchor, player)
   local now = os.clock()
   if now - lastCheck < M.CHECK_S then return end
   lastCheck = now
+  local sta = rawget(_G, 'simTimeAuthority')
+  if sta and sta.getPause and sta.getPause() then stillSince, watch = nil, nil; return end
   -- the planned route: asked once (and on re-routes), taken when it arrives
   if pendingId then
     local c = core()
@@ -577,13 +682,15 @@ function M.update(anchor, player)
       if r.points and #r.points >= 2 and (tonumber(r.dist) or 0) >= 1 then
         routeVersion = routeVersion + 1
         route = { points = r.points, dist = r.dist, dur = r.dur, version = routeVersion }
-        routeError, enu, routedTo = nil, nil, nil
+        routeError, enu, routedTo, targetS, watch, recovering = nil, nil, nil, nil, nil, false
       else
         routeError = r.error or 'no route'
+        recovering = false
         if not route then route = false end
       end
     elseif now - lastRequest > 30 then
       pendingId = nil                      -- no answer: try again below
+      recovering = false
     end
   elseif route == nil then
     requestRoute(player)
@@ -613,14 +720,15 @@ function M.update(anchor, player)
     info.off = off
     if route.dist and route.dist > 0 and route.dur then info.eta = route.dur * remaining / route.dist end
     if off > M.OFF_ROUTE_M and not pendingId and now - lastRequest > M.REROUTE_S then requestRoute(player) end
+    local here = e.cum[i] + t * (e.cum[i + 1] - e.cum[i])
+    watchProgress(here, player, now)
     local tg = nodes and routeTarget(e, nodes, i, t)
     if tg then
       -- set again only when the target moved on by a good stretch (each setPath re-plans the arrows)
       -- only forward (the farthest point on the graph flickered between two 150 m steps, every second a new path
       -- and the AI re-planning: Fells Point 2026-10-14), unless the old target is about reached
-      local here = e.cum[i] + t * (e.cum[i + 1] - e.cum[i])
       local keep = targetS and type(routedTo) == 'string' and routedTo:sub(1, 1) == 'r'
-        and tg.s < targetS + M.RETARGET_M and targetS > here + 2 * M.RETARGET_M
+        and tg.s < targetS + M.RETARGET_M and targetS > here + refreshLead()
       local key = tg.final and 'final' or (keep and routedTo) or ('r' .. math.floor(tg.s / M.RETARGET_M))
       local wps = {}
       for _, w in ipairs(tg.via or {}) do wps[#wps + 1] = vec3(w.x, w.y, w.z) end
@@ -630,6 +738,15 @@ function M.update(anchor, player)
     end
   end
   -- no planned route (yet, or offline), or none of it on the local graph: toward the destination
+  -- With a planned route, a disconnected local graph is a loading gap. A nearest-destination
+  -- fallback can pick the other carriageway or a dead end and send the car round in circles.
+  if auto and route then
+    local veh = playerVeh()
+    if veh and not autoPath then holdRoute(veh, 'route') end
+    routedTo = nil
+    return
+  end
+  if auto and route == false then watchProgress(-dist, player, now) end
   local id, pos, nd = M.pickNode(nodes, tx, ty)
   if not id then return end
   local final = nd <= M.FINAL_M
@@ -638,7 +755,9 @@ end
 
 -- The level ended: the arrows went with it (the destination and its route stay for the next level start).
 function M.reset()
+  if auto then M.setAutodrive(false) end
   routedTo, info, lastCheck, enu, progress = nil, nil, -math.huge, nil, 1
+  targetS, watch, vehGraph = nil, nil, {}
 end
 
 return M

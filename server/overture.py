@@ -44,9 +44,9 @@ log = logging.getLogger("earthd.mapdata")
 # The pinned Overture release (update path: docs/ARCHITECTURE.md "Map data"; `mapdata.py --latest`
 # prints the newest one). Overture removes old releases from the buckets after some months: a
 # pinned release that is gone raises ReleaseGone for cells not cached yet.
-RELEASE = "2026-09-23.1"
+RELEASE = "2026-9-23.1"
 STAC_ROOT = "https://stac.overturemaps.org"
-DUCKDB_THREADS = 2              # DuckDB worker threads per query (the server is niced; the game comes first)
+DUCKDB_THREADS = 6              # DuckDB worker threads per query (the server is niced; the game comes first)
 REMOTE_FILES = 32               # open RemoteFiles kept (their blocks share rangeread's memory LRU)
 # DuckDB's own prefetching reads whole row groups one after the other; Reader._plan fetches what the
 # query needs in parallel first, so DuckDB reads lazily from the block cache

@@ -16,6 +16,7 @@ M.MIN_GAP_S = 1.0
 -- reaches WINDOW_M = 1100 m, the block ~450 m; without it the graph ran out ahead of a car driving on before the next
 -- graph came, every 400 m: the GPS arrows ended and the autodrive stopped, the user's Cannonball run 2026-10-14)
 M.RECLIP_M = 150
+M.AUTO_RECLIP_M = 100   -- refresh on each 128 m ground move during Autodrive, before endpoint braking
 M.UI_MAP = false        -- send our graph to the UI (the big map) on every apply
 M.RULES_FILE = '/temp/beamngEarth/roadRules.json'
 M.rules = { rightHandDrive = false, turnOnRed = true }    -- US; `rightHandDrive = true` means driving on the left
@@ -501,7 +502,10 @@ function M.update(aid, b)
     return
   end
   -- a small block move alone does not re-apply (each apply is a ~40 ms frame); one of RECLIP_M does
-  if not (dirty or foreign) and applied and M.boxMoved(applied.box, b) >= M.RECLIP_M then dirty = true end
+  local reclip = M.RECLIP_M
+  local gps = package.loaded['beamngEarth/gps']
+  if gps and gps.autodrive and gps.autodrive() then reclip = M.AUTO_RECLIP_M end
+  if not (dirty or foreign) and applied and M.boxMoved(applied.box, b) >= reclip then dirty = true end
   if not (dirty or foreign) then return end
   local t = os.clock()
   if t - lastApply < M.MIN_GAP_S and not foreign then return end

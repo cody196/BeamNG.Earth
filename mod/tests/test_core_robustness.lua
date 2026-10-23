@@ -179,6 +179,7 @@ T.check(warned and held, 'no server: warned, then held at the edge (banner secon
 T.check(veh.pos.x <= 1022 - edgeguard.STOP_M + 0.5 and simTimeAuthority.paused,
   string.format('the game paused with the car inside the flat block (x %.1f)', veh.pos.x))
 T.check(#server.sent == 0, 'still nothing sent')
+T.check(not core.autodriveReady(), 'Autodrive cannot start without the world server')
 
 ------------------------------------------------------------------------------------------
 -- 2. the server comes
@@ -194,6 +195,7 @@ serverSend({ type = 'hello', protocol = 4, format = 4, serverVersion = '0.4.0', 
 T.check(pumpUntil(function() return #received('prepare_anchor') == 1 end, 10), 'auto-teleport requested')
 T.check(core.banner().id == 'recovered' and shown() == 'BeamNG.Earth server connected', 'the server came: "BeamNG.Earth server connected"')
 local req = received('prepare_anchor')[1]
+T.check(not core.autodriveReady(), 'Autodrive waits for the first committed ground')
 -- a healthy server, but the first anchor not built yet: terrain-follow cannot move the flat start
 -- block at all (it follows anchors only), so the car on it is still held at its edge
 veh.pos, veh.vel = vec3(950, 0, 0.5), vec3(20, 0, 0)
@@ -225,6 +227,7 @@ T.check(has(last('pose').sessions, 's1') and #last('pose').sessions == 1, 'pose.
 T.check(farfield.session() == 's1', 'the far field knows its session')
 for _ = 1, 100 do frame() end
 T.check(core.banner().id == 'ok' and not shown(), 'all is well: the banner is hidden')
+T.check(core.autodriveReady(), 'committed ground and a connected server allow Autodrive')
 -- healthy: the guard never acts, even driving at the edge (terrain-follow's job)
 veh.pos, veh.vel = vec3(990, 0, 0.5), vec3(20, 0, 0)
 local sets = veh.sets
@@ -246,6 +249,7 @@ server.failErr, server.down = 'closed', true
 frames(2)
 T.check(not st().sessionId and core.banner().id == 'lost' and shown():find('reconnecting (attempt', 1, true),
   'connection lost: "reconnecting (attempt n)"')
+T.check(not core.autodriveReady(), 'Autodrive brakes after disconnect')
 frames(130) -- 6.5 s: a retry every 2 s
 T.check(shown():find('(attempt 3)', 1, true) ~= nil, 'the attempt number counts up: ' .. tostring(shown()))
 setGround(0, 0)
@@ -271,6 +275,7 @@ serverSend({ type = 'hello', protocol = 4, format = 4, serverVersion = '0.4.0', 
 T.check(pumpUntil(function() return #received('prepare_anchor') == nA + 1 end, 10), 'resync requested')
 local rs = last('prepare_anchor')
 T.check(rs.lat == req.lat and rs.lon == req.lon, 'resync at the same origin')
+T.check(not core.autodriveReady(), 'a resync must commit before Autodrive resumes')
 -- Until the resync commits, our anchor id is s1's: s2 numbers its own anchors from 1 too (its resync
 -- anchor is 1), so a pose / prepare_terrain / commit_terrain naming anchor 1 would make s2 switch to
 -- its anchor 1 and stream tiles the far field files under s1. Nothing names it, and the block cannot
@@ -336,6 +341,8 @@ T.check(st().guard.mode == 'off', 'just asked: the guard waits (the server may b
 for _ = 1, 60 * 20 do frame() end
 T.check(veh.pos.x <= ex1 - edgeguard.STOP_M + 0.5 and simTimeAuthority.paused,
   string.format('unanswered for STUCK_S: paused %.1f m inside the edge', ex1 - veh.pos.x))
+T.check(not core.serverHealthy() and core.autodriveReady(),
+  'late terrain keeps loaded road usable for Autodrive while the edge guard still protects the boundary')
 T.check(shown() == 'Paused at the edge of the loaded ground until the BeamNG.Earth server answers terrain requests again (resume to drive back)',
   'banner: the server does not answer terrain requests')
 pt = last('prepare_terrain')
