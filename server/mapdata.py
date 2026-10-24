@@ -240,6 +240,7 @@ class MapData:
         self._mem = OrderedDict()           # (cell, layer) -> (decoded layer, provenance, bytes): cell()'s LRU
         self._mem_bytes = 0
         self._mem_lock = threading.Lock()
+        self._optional_retry = {}  # layer -> monotonic retry time after a source I/O failure
         self.road_context = roadcontext.Context(lambda key: self.cell(key, layers=("roads",)).layers["roads"])
         self._capture = threading.local()
         self.geometry_epoch = 0
@@ -578,8 +579,9 @@ class MapData:
                 break
 
     # --- cells -----------------------------------------------------------------------------------
-    def cell(self, key, layers=LAYERS, kind="demand"):
-        """CellData of one cell with the given layers (fetched / built / cached as needed)."""
+    def cell(self, key, layers=LAYERS, kind="demand", optional=()):
+        """CellData with requested layers. Optional source I/O failures leave a layer as None,
+        with a short retry cooldown; partial results never qualify for the generated cache."""
         key = _key(key)
         lat_c, lon_c = key.center()
         frame = geodesy.EnuFrame(lat_c, lon_c, 0.0)
@@ -592,24 +594,40 @@ class MapData:
             return arrays, hit, time.perf_counter() - t0
         mem = {}
         with self._mem_lock:
+            cooling = {layer for layer in optional if self._optional_retry.get(layer, 0) > time.monotonic()}
             for layer in layers:
                 got = self._mem.get((str(key), layer))
                 if got is not None:
                     self._mem.move_to_end((str(key), layer))
                     mem[layer] = got
-        futs = [(layer, self.pool.submit(timed, layer)) for layer in layers if layer not in mem]
+        skipped = {layer for layer in cooling if layer in layers and layer not in mem and not self.has(key, layer)}
+        futs = [(layer, self.pool.submit(timed, layer)) for layer in layers if layer not in mem and layer not in skipped]
         results = {}
         err = None
         for layer, fut in futs:             # all finish before an error is raised (no stray fetches)
             try:
                 results[layer] = fut.result()
             except Exception as e:
-                err = err or e
-        if err is not None:
+                if layer in optional and isinstance(e, OSError):
+                    skipped.add(layer)
+                    with self._mem_lock:
+                        report = self._optional_retry.get(layer, 0) <= time.monotonic()
+                        self._optional_retry[layer] = time.monotonic() + 30.0
+                    if report:
+                        log.warning("mapdata: optional %s unavailable (%s); continuing without it, retry in 30 s",
+                                    layer, e)
+                else:
+                    err = err or e
+        if err is not None or skipped:
             for capture in getattr(self._capture, "stack", ()):
                 capture[0], capture.failed = False, True
+        if err is not None:
             raise err
         for layer in layers:                # assembled in the caller's order, whatever finished first
+            if layer in skipped:
+                cd.layers[layer] = None
+                cd.stats[layer] = {"s": 0.0, "hit": False, "failed": True}
+                continue
             if layer in mem:                # decoded before: shared (cell layers are never changed after loading)
                 cd.layers[layer], prov, _ = mem[layer]
                 dt, hit = 0.0, True

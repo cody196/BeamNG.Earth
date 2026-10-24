@@ -24,16 +24,18 @@ local maps = { [1] = graph({'a','b','c','d','e'}), [2] = graph({'b','c','d','e',
 local serial, aiMap, currentRoute, manualPath = 1, nil, nil, nil
 local starts, restores, stops, disabled, rejects = 0, 0, 0, 0, 0
 local inputs = {}
+local position, direction = {x=150,y=0,z=0}, {x=1,y=0,z=0}
 mapmgr = { mapData = maps[1], setMap = function(s) serial = s; mapmgr.mapData = maps[s] end }
 input = { event = function(k, value) inputs[k] = value end }
-obj = { queueGameEngineLua = function() rejects = rejects + 1 end }
+obj = { queueGameEngineLua = function() rejects = rejects + 1 end,
+  getPosition=function() return position end, getDirectionVector=function() return direction end }
 ai = { mode = 'disabled',
   driveUsingPath = function(p)
     starts = starts + 1
-    ai.mode, currentRoute, aiMap, manualPath = 'manual', nil, nil, copy(p.path)
+    ai.mode, currentRoute, aiMap, manualPath = 'manual', nil, nil, p.path
     T.check(p.driveInLane == 'on' and p.avoidCars == 'on' and p.routeSpeedMode == 'legal', 'keep stock lane/traffic/legal-speed control')
   end,
-  setPath = function(ids) restores = restores + 1; manualPath = copy(ids) end,
+  setPath = function(ids) restores = restores + 1; manualPath = ids end,
   setMode = function(mode)
     ai.mode, currentRoute, manualPath = mode, nil, nil
     if mode == 'stop' then stops = stops + 1 elseif mode == 'disabled' then disabled = disabled + 1 end
@@ -47,16 +49,16 @@ local function frame()
       if currentRoute[#currentRoute] == manualPath[1] then
         for i = 2, #manualPath do currentRoute[#currentRoute+1] = manualPath[i] end
       end
-    else currentRoute = copy(manualPath) end
+    else currentRoute = manualPath end
     manualPath = nil
   end
   A.updateGFX()
 end
 local function settle() frame(); frame() end
 A.setPath({'a','b','c'}, 1, 1); settle()
-T.check(starts == 1 and same(currentRoute, {'a','b','c'}), 'initial activation starts the driver once')
+T.check(starts == 1 and same(currentRoute, {'b','c'}), 'initial activation starts the driver once, aiming forward')
 A.setPath({'b','c','d'}, 1, 2); settle()
-T.check(starts == 1 and restores == 1 and same(currentRoute, {'a','b','c','d'}), 'extend while preserving controls')
+T.check(starts == 1 and restores == 1 and same(currentRoute, {'b','c','d'}), 'extend while preserving controls')
 A.setPath({'b','c'}, 1, 3); settle()
 T.check(starts == 1 and restores == 1 and currentRoute[#currentRoute] == 'd', 'shorter visibility does not introduce a stopping endpoint')
 
@@ -64,7 +66,7 @@ T.check(starts == 1 and restores == 1 and currentRoute[#currentRoute] == 'd', 's
 A.setPath({'b','c','d','e'}, 2, 4)
 A.setPath({'b','c','d','e','f'}, 2, 5)
 settle()
-T.check(starts == 1 and restores == 2 and same(currentRoute, {'b','c','d','e','f'}),
+T.check(starts == 1 and restores == 2 and same(currentRoute, {'c','d','e','f'}),
   'a streamed map restores and extends without losing the road between the car and the old endpoint')
 A.setPath({'b','c','d','e','f'}, 2, 6); settle()
 T.check(starts == 1 and restores == 2, 'repeated arrow refreshes do not reset or resend the AI path')
@@ -85,13 +87,43 @@ T.check(ai.mode == 'disabled' and disabled == 1 and inputs.throttle == 0 and inp
 A.setPath({'b','c','d','e'}, 2, 11); settle()
 local before = starts
 A.setPath({'b','c'}, 2, 12, nil, nil, true); settle()
-T.check(starts == before + 1 and same(currentRoute, {'b','c'}), 'a genuine final destination may shorten the route')
+T.check(starts == before + 1 and same(currentRoute, {'c'}), 'a genuine final destination may shorten the route')
 maps[2].graph.b.e = {oneWay=true,inNode='b'}
 A.setPath({'b','e','f'}, 2, 13); settle()
-T.check(starts == before + 2 and same(currentRoute, {'b','e','f'}), 'a changed turn replaces the route once')
+T.check(starts == before + 2 and same(currentRoute, {'e','f'}), 'a changed turn replaces the route once')
 mapmgr.mapData = graph({'b','c','d','e','f'})
 settle()
 T.check(ai.mode == 'stop' and rejects == 3, 'an unexpected map change requests a freshly trimmed route')
+A.stop()
+
+-- A node path is a list of targets, NOT a polyline with an implicit rear support point.
+-- Stock ai.lua planAhead creates ego.pos first; buildNextRoute then visits path[1].
+local straight = graph({'a','b','c','d','e'})
+T.check(same(A.forwardPath({'a','b','c','d'}, straight, {x=250,y=0,z=0}, direction), {'c','d'}),
+  'delayed commands skip all nodes the car has already passed')
+T.check(same(A.forwardPath({'a','b','c'}, straight, {x=200,y=0,z=0}, direction), {'c'}),
+  'a car exactly on a node targets the next node')
+T.check(A.forwardPath({'a','b','c'}, straight, {x=150,y=0,z=10}, direction)==nil,
+  'do not start on a different overpass deck')
+T.check(A.forwardPath({'a','b','c'}, straight, position, {x=-1,y=0})==nil,
+  'a stale heading cannot command a U-turn')
+local turn = graph({'a','b','c'})
+turn.positions.c={x=200,y=100,z=0}
+T.check(same(A.forwardPath({'a','b','c'}, turn, position, direction), {'b','c'}),
+  'preserve the junction ahead when the route turns, rather than cutting the corner')
+
+-- Mimic stock AI's in-place cleanup, then extend again. Its array must not own our history.
+mapmgr.mapData=maps[1]
+A.setPath({'a','b','c','d'},1,20); settle()
+table.remove(currentRoute,1)
+local startsBefore, restoresBefore=starts,restores
+A.setPath({'a','b','c','d','e'},1,21); settle()
+T.check(starts==startsBefore and restores==restoresBefore+1 and same(currentRoute,{'c','d','e'}),
+  'stock AI pruning its own array cannot mutate the bridge comparison path')
+local rejectBefore=rejects
+maps[1].graph.c.a={}
+A.setPath({'a','b','c','a','b'},1,22); settle()
+T.check(ai.mode=='stop' and rejects==rejectBefore+1, 'a closed route loop is rejected before driving')
 A.stop()
 
 -- Exercise the real GPS call path, not just joinStart with already-separated arguments.
@@ -110,4 +142,8 @@ local a,b = G.edgeUnder(nodes, 40, 0, 1, 0, -10)
 T.check(a == 'under' and b == 'under2', 'overpass matching uses deck height')
 T.check(#G.joinStart({'a','c'}, 'a','b', nodes) == 0, 'an unreachable start requests replanning instead of a U-turn')
 T.check(#G.validFrom({'a','b','c'},1,{nodes}) == 3 and #G.validFrom({'c','b'},1,{nodes}) == 1, 'legal directed edges only')
+nodes.ramp1={pos={x=100,y=1,z=0},links={ramp2={oneWay=true,inNode='ramp1'}}}
+nodes.ramp2={pos={x=200,y=1,z=0},links={}}
+T.check(same(G.startPath({'a','b','c'},nodes,{x=140,y=1,z=0},{x=1,y=0}),{'b','c'}),
+  'graph restoration stays on the known mainline even when a parallel ramp centreline is closer')
 T.done('test_autodrive')

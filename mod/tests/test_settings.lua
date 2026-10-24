@@ -418,4 +418,17 @@ do
   for k, v in pairs(saved) do rawset(_G, k, v) end
 end
 
+-- Tree density: all five presets persist and apply to the live tree renderer.
+local trees = require('beamngEarth/trees')
+T.check(settings.defaults().treeDensity == 'high', 'tree density defaults to the previous High density')
+for _, preset in ipairs({ 'low', 'medium', 'high', 'veryHigh', 'max' }) do
+  local result = settings.uiSet('treeDensity', preset)
+  T.check(result.ok and trees.density == preset, 'tree density applies: ' .. preset)
+  settings.load()
+  T.check(settings.get('treeDensity') == preset, 'tree density persists: ' .. preset)
+end
+T.check(not settings.uiSet('treeDensity', 'ultra').ok and trees.density == 'max', 'invalid tree density rejected')
+settings.uiReset()
+T.check(settings.get('treeDensity') == 'high' and trees.density == 'high', 'reset restores High density')
+
 T.done('test_settings')

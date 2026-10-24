@@ -92,6 +92,41 @@ class GraphTest(unittest.TestCase):
             self.assertAlmostEqual(n[2], 10.0 + 4.0 * (n[0] - 50.0) / 100.0, delta=0.05)
         self.assertTrue(all(n[2] == 10.0 for n in off), "the ground (flat 10 m) off the bridge")
 
+    def test_ground_nodes_follow_local_height_far_from_anchor(self):
+        # A constant geographic elevation is NOT a flat plane in the game's frame.
+        # At ~8 km the former raw-elevation nodes trip Autodrive's 5 m deck guard.
+        for cx, cy in ((0, 0), (0, 8170), (20000, 0), (0, -20000)):
+            with self.subTest(centre=(cx, cy)):
+                f = features([[(cx-150, cy), (cx+150, cy)]], ['motorway'])
+                elev = lambda la, lo: np.full(np.shape(la), 303.12)
+                g = navgraph.build(FRAME, [f], elev, (cx, cy))
+                self.assertGreater(len(g['nodes']), 2)
+                for x, y, z, _ in g['nodes'].values():
+                    surface_z = float(FRAME.surface_enu(x, y, elev)[5])
+                    self.assertAlmostEqual(z, surface_z, delta=0.015,
+                                           msg='graph and physical ground must share the ENU frame')
+                if cy == 8170:
+                    self.assertTrue(all(303.12-n[2] > 5 for n in g['nodes'].values()))
+
+    def test_bridge_heights_are_not_converted_twice_far_from_anchor(self):
+        f = features([[(-150, 20000), (150, 20000)]], ['motorway'])
+        xy = np.column_stack(FRAME.geodetic_to_enu(f.lonlat[:, 1], f.lonlat[:, 0], 0))[:, :2]
+        deck_z = 280.5  # bridge builder already returns local ENU up
+        decks = {'id000': [(xy, np.full(len(xy), deck_z))]}
+        g = navgraph.build(FRAME, [f], lambda la, lo: np.full(np.shape(la), 303.12),
+                           (0, 20000), decks=decks)
+        self.assertGreater(len(g['nodes']), 2)
+        self.assertTrue(all(n[2] == deck_z for n in g['nodes'].values()),
+                        'do not apply the curvature correction again to bridge profiles')
+
+    def test_ground_height_respects_anchor_altitude(self):
+        import geodesy
+        elevated = geodesy.EnuFrame(FRAME.lat0, FRAME.lon0, 100)
+        f = features([[(0, 0), (150, 0)]], ['primary'])
+        g = navgraph.build(elevated, [f], lambda la, lo: np.full(np.shape(la), 303.12), (0, 0))
+        self.assertTrue(g['nodes'])
+        self.assertTrue(all(abs(n[2]-203.12) < 0.02 for n in g['nodes'].values()))
+
 
 
 class SignalsTest(unittest.TestCase):

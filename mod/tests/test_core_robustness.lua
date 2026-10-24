@@ -180,6 +180,8 @@ T.check(veh.pos.x <= 1022 - edgeguard.STOP_M + 0.5 and simTimeAuthority.paused,
   string.format('the game paused with the car inside the flat block (x %.1f)', veh.pos.x))
 T.check(#server.sent == 0, 'still nothing sent')
 T.check(not core.autodriveReady(), 'Autodrive cannot start without the world server')
+T.check(not core.requestAutodriveRefresh() and #received('navgraph_refresh')==0,
+  'a disconnected Autodrive cannot queue graph refreshes')
 
 ------------------------------------------------------------------------------------------
 -- 2. the server comes
@@ -228,6 +230,9 @@ T.check(farfield.session() == 's1', 'the far field knows its session')
 for _ = 1, 100 do frame() end
 T.check(core.banner().id == 'ok' and not shown(), 'all is well: the banner is hidden')
 T.check(core.autodriveReady(), 'committed ground and a connected server allow Autodrive')
+T.check(core.requestAutodriveRefresh(), 'a stopped car on committed ground can request fresh road data')
+frames(2)
+T.check(#received('navgraph_refresh')==1, 'the stationary graph refresh reaches the server protocol')
 -- healthy: the guard never acts, even driving at the edge (terrain-follow's job)
 veh.pos, veh.vel = vec3(990, 0, 0.5), vec3(20, 0, 0)
 local sets = veh.sets

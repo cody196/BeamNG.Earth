@@ -151,7 +151,8 @@
       <span v-if="state.gps.planning && !routePts.length" class="gps-dist">planning route…</span>
       <span v-else-if="state.gps.remaining != null" class="gps-dist">{{ fmtMiles(state.gps.remaining) }}<template
         v-if="state.gps.eta != null">, {{ fmtDur(state.gps.eta) }}</template></span>
-      <span v-if="state.gps.routeError && !routePts.length" class="gps-warn" :title="state.gps.routeError">no road route: heading straight there</span>
+      <span v-if="state.gps.routeError && !routePts.length" class="gps-warn" :title="state.gps.routeError">Road route unavailable; retrying…</span>
+      <span v-if="state.gps.autodrive && state.gps.autoWaiting" class="gps-dist">Waiting for {{ state.gps.autoWaiting === 'server' ? 'world connection' : 'drivable route' }}…</span>
       <button class="map-btn small" @click="showOnMap(state.gps)">Show</button>
       <button class="map-btn small" :disabled="!!state.cannotGo" @click="teleportNow(state.gps.lat, state.gps.lon, state.gps.name)">Teleport</button>
       <button class="map-btn small" :class="{ primary: state.gps.autodrive }" @click="setAutodrive(!state.gps.autodrive)"

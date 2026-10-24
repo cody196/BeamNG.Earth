@@ -319,11 +319,17 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
         X = np.array([pending[nm][0] for nm in used])
         Y = np.array([pending[nm][1] for nm in used])
         la, lo, _ = frame.enu_to_geodetic(X, Y, 0.0)
-        Z = np.asarray(elev(la, lo), np.float64).copy()
+        # DEM/grading returns geodetic elevation, not local ENU up. Terrain and road
+        # meshes already make this conversion. Using elevation directly floats the
+        # graph ~5 m above the road at 8 km from the anchor (Earth curvature), so
+        # Autodrive's deck check rejects its own highway after several miles.
+        heights = np.asarray(elev(la, lo), np.float64)
+        Z = np.asarray(frame.geodetic_to_enu(la, lo, heights)[2], np.float64).copy()
         if decks:
             for k, nm in enumerate(used):
                 dz = _deck_z(decks, node_fid.get(nm), X[k], Y[k])
                 if dz is not None:
+                    # Bridge profiles are already in ENU; do not convert them twice.
                     Z[k] = dz
         radius = {}
         for e in edges:
@@ -457,6 +463,21 @@ class Tracker:
         self.building = False
         self.serial = 0
         self.pool = None        # one thread of its own (vegetation.Tracker: not behind other trackers' builds)
+        self.refresh_pending = False
+        self.last_refresh = -float("inf")
+
+    def request_refresh(self):
+        """Retry incomplete road data without requiring a stopped car to move 400 m first.
+
+        A request arriving during a build survives its completion and triggers one more build.
+        Rate-limit independently of the client so repeated toggles cannot flood the road worker.
+        """
+        import time
+        now = time.monotonic()
+        if now - self.last_refresh < 20:
+            return False
+        self.last_refresh, self.refresh_pending = now, True
+        return True
 
     def close(self):
         if self.pool is not None:
@@ -466,9 +487,10 @@ class Tracker:
         """build(aid, x, y, serial) runs in a worker and returns (vfs path, nodes, edges) or None."""
         if self.building:
             return
-        if aid == self.aid and self.centre is not None and \
+        if not self.refresh_pending and aid == self.aid and self.centre is not None and \
                 max(abs(x - self.centre[0]), abs(y - self.centre[1])) < self.rebuild_m:
             return
+        self.refresh_pending = False
         self.building = True
         self.serial += 1
         serial = self.serial

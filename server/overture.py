@@ -31,6 +31,7 @@ import threading
 import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import urljoin
 
 import numpy as np
 
@@ -44,9 +45,9 @@ log = logging.getLogger("earthd.mapdata")
 # The pinned Overture release (update path: docs/ARCHITECTURE.md "Map data"; `mapdata.py --latest`
 # prints the newest one). Overture removes old releases from the buckets after some months: a
 # pinned release that is gone raises ReleaseGone for cells not cached yet.
-RELEASE = "2026-9-23.1"
+RELEASE = "2026-10-21.0"
 STAC_ROOT = "https://stac.overturemaps.org"
-DUCKDB_THREADS = 6              # DuckDB worker threads per query (the server is niced; the game comes first)
+DUCKDB_THREADS = 2              # DuckDB worker threads per query (the server is niced; the game comes first)
 REMOTE_FILES = 32               # open RemoteFiles kept (their blocks share rangeread's memory LRU)
 # DuckDB's own prefetching reads whole row groups one after the other; Reader._plan fetches what the
 # query needs in parallel first, so DuckDB reads lazily from the block cache
@@ -169,6 +170,7 @@ class StacIndex:
     def __init__(self, release, raw_dir, fetcher):
         self.release, self.raw_dir, self.fetcher = release, raw_dir, fetcher
         self._coll = {}
+        self._items = {}
         self._lock = threading.Lock()
 
     def _json(self, url, path, kind):
@@ -198,29 +200,57 @@ class StacIndex:
         with self._lock:
             c = self._coll.get(key)
         if c is None:
-            raw = self._json(f"{STAC_ROOT}/{self.release}/{theme}/{typ}/collection.json",
+            url = f"{STAC_ROOT}/{self.release}/{theme}/{typ}/collection.json"
+            raw = self._json(url,
                              os.path.join(self._dir(theme, typ), "collection.json"), kind)
-            items = [link["href"] for link in raw["links"] if link.get("rel") == "item"]
-            bboxes = raw["extent"]["spatial"]["bbox"][1:]
-            if len(items) != len(bboxes):
-                raise OvertureError(f"STAC {theme}/{typ}: {len(items)} items but {len(bboxes)} file boxes")
+            items = [urljoin(url, link["href"]) for link in raw["links"] if link.get("rel") == "item"]
+            extent = raw["extent"]["spatial"]["bbox"]
+            # Overture normally supplies an aggregate followed by one box per file. STAC also
+            # permits just the aggregate (building_part in 2026-10-21.0 has ONE file/box), or
+            # spatial clusters rather than file boxes. In those cases use the aggregate as a
+            # broad filter and the individual items' bboxes below; never discard the layer.
+            if items and not extent:
+                raise OvertureError(f"STAC {theme}/{typ}: missing spatial extent")
+            bboxes = extent[1:] if len(extent) == len(items) + 1 else extent[:1] * len(items)
+            bboxes = [self._bbox(bb) for bb in bboxes]
             c = {"items": items, "bboxes": bboxes, "license": raw.get("license")}
             with self._lock:
                 self._coll[key] = c
         return c
+
+    @staticmethod
+    def _bbox(bb):
+        if not isinstance(bb, (list, tuple)) or len(bb) not in (4, 6):
+            raise OvertureError(f"STAC: invalid bounding box {bb!r}")
+        box = [bb[0], bb[1], bb[len(bb) // 2], bb[len(bb) // 2 + 1]]
+        if not all(isinstance(v, (int, float)) and np.isfinite(v) for v in box):
+            raise OvertureError(f"STAC: invalid bounding box {bb!r}")
+        return box
+
+    def _item(self, theme, typ, href, kind):
+        with self._lock:
+            item = self._items.get(href)
+        if item is None:
+            name = href.rstrip("/").rsplit("/", 1)[-1]
+            item = self._json(href, os.path.join(self._dir(theme, typ), "items", name), kind)
+            self._bbox(item.get("bbox"))  # malformed metadata must not become cached empty geometry
+            with self._lock:
+                self._items[href] = item
+        return item
 
     def files(self, theme, typ, bounds, kind="demand"):
         """[(name, [aws url, azure url], size)] of the files whose bbox intersects `bounds`, in
         index order."""
         c = self.collection(theme, typ, kind)
         out = []
-        for i, (href, bb) in enumerate(zip(c["items"], c["bboxes"])):
+        for href, bb in zip(c["items"], c["bboxes"]):
             if not intersects(bb, bounds):
                 continue
-            name = href.rstrip("/").rsplit("/", 1)[-1]
-            item = self._json(href, os.path.join(self._dir(theme, typ), "items", name), kind)
+            item = self._item(theme, typ, href, kind)
+            if not intersects(self._bbox(item["bbox"]), bounds):
+                continue
             a = item["assets"]
-            urls = [a["aws"]["href"]] + ([a["azure"]["href"]] if "azure" in a else [])
+            urls = [urljoin(href, a["aws"]["href"])] + ([urljoin(href, a["azure"]["href"])] if "azure" in a else [])
             out.append((urls[0].rsplit("/", 1)[-1], urls, int(a["aws"]["file:size"])))
         return out
 

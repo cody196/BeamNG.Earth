@@ -1997,6 +1997,11 @@ function M.takeRoute(id)
   routeResults[id] = nil
   return r
 end
+function M.requestAutodriveRefresh()
+  if not M.autodriveReady() then return false end
+  net.send({type='navgraph_refresh'})
+  return true
+end
 function M.takeGeocode(id)
   local r = geocodeResults[id]
   geocodeResults[id] = nil

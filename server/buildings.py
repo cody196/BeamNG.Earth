@@ -2727,7 +2727,8 @@ def road_tile_items(frame, tx, ty, md, ground, decks=None):
     [(xy (k, 2), z (k,))] in the anchor frame (roads.BridgeProfiles.parts): buildings they run through get a way."""
     import roads
     x0, y0, x1, y1 = roads.tile_bbox(tx, ty)
-    cds = [md.cell(k, layers=("buildings", "building_parts", "roads", "infrastructure", "water"), kind="demand")
+    cds = [md.cell(k, layers=("buildings", "building_parts", "roads", "infrastructure", "water"), kind="demand",
+                   optional=("buildings", "building_parts", "infrastructure", "water"))
            for k in roads.cells_of_tile(frame, tx, ty, margin=0.0)]
     return tile_buildings(frame, x0, y0, x1, y1, [c.layers.get("buildings") for c in cds], ground,
                           part_layers=[c.layers.get("building_parts") for c in cds],
@@ -2790,7 +2791,8 @@ def far_tile(frame, tx, ty, md, ground, out_dir, vfs_dir, aid):
     import os
     import roads
     x0, y0, x1, y1 = roads.tile_bbox(tx, ty)
-    cds = [md.cell(k, layers=("buildings", "building_parts", "infrastructure", "roads", "water"), kind="demand")
+    cds = [md.cell(k, layers=("buildings", "building_parts", "infrastructure", "roads", "water"), kind="demand",
+                   optional=("buildings", "building_parts", "infrastructure", "water"))
            for k in roads.cells_of_tile(frame, tx, ty, margin=0.0)]
     items = tile_buildings(frame, x0, y0, x1, y1, [c.layers.get("buildings") for c in cds], ground,
                            part_layers=[c.layers.get("building_parts") for c in cds],

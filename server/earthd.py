@@ -2997,6 +2997,9 @@ class Connection:
             self.spawn(self.geocode(msg))
         elif kind == "route":                   # the GPS: the whole road route (routing.py)
             self.spawn(self.route(msg))
+        elif kind == "navgraph_refresh":        # a stopped Autodrive cannot trigger the movement-only rebuild
+            if self.nav.request_refresh():
+                log.info("autodrive: navgraph refresh requested at %s", self.focus)
         elif kind == "where":                   # the status bar's street, town and country (geocode.py)
             self.spawn(self.where(msg))
         elif kind == "random_place":            # the level select's "Random location" (randomplace.py)

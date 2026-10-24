@@ -8,6 +8,7 @@
 -- than OFF_ROUTE_M plans it again from where the player is. Without a planned route (offline): steered toward the
 -- destination through the graph node nearest it. Within ARRIVE_M: arrived, cleared.
 local M = {}
+local routepath = require('beamngEarth/routepath')
 
 M.CHECK_S = 1.0
 M.ARRIVE_M = 40         -- this close (horizontally): arrived
@@ -36,6 +37,9 @@ M.AUTO_PROGRESS_M = 10
 M.AUTO_LOOP_TRAVEL_M = 60
 M.AUTO_RECOVERY_LIMIT = 3
 M.AUTO_AGGRESSION = 0.3
+M.AUTO_RESUME_M = 60  -- enough usable road to restart, including a short newly loaded extension
+M.AUTO_HOLD_S = 8     -- a route-loading hold gets a fresh graph before waiting for the traffic watchdog
+M.DEBUG = true        -- state changes and a ten-second heartbeat in beamng.log; TRACE adds every path
 -- Safety: the AI brakes to a stop while the world server is away (no new ground or roads: an autodrive left on through
 -- server restarts drove off the loaded world and wrecked the car, 2026-10-14) and goes on when it is back; a car
 -- damaged this much ends the autodrive.
@@ -55,6 +59,7 @@ local info = nil        -- { dist, bearing, remaining, eta } at the last check
 local auto = false      -- autodrive on
 local autoPath = nil    -- the node ids last given to the AI
 local autoSerial = nil  -- the graph (navgraph applies) they were taken from
+local autoFinal = false -- only the true GPS destination, never a temporary streamed endpoint
 local stillSince = nil
 local paused = false    -- the AI holds the car (world server away)
 local vehGraph = {}     -- vehicle id -> the game's map buildSerial when its mapmgr last took the graph
@@ -64,6 +69,14 @@ local waiting = nil     -- 'route', 'graph', 'server' or nil
 local recovering = false
 local watch = nil       -- route progress and distance travelled, rather than speed alone
 local recoveries = 0
+local holdSince, matchInfo, lastReject = nil, nil, nil
+local lastHeartbeat, lastRefresh = -math.huge, -math.huge
+local restartRoute, blockedOnStop = false, false
+local roadHint = nil   -- preserve the known carriageway while stopped at a temporary endpoint
+
+local function debugEvent(event, detail)
+  if M.DEBUG and log then log('I', 'beamngEarthAutodrive', event .. ' ' .. (detail or '')) end
+end
 
 -- Pure: the id and position {x, y, z} of the node in `nodes` (map.getMap().nodes: id -> { pos = {x, y, z} })
 -- nearest (tx, ty), and its distance; nil when there are none.
@@ -165,6 +178,8 @@ local function requestRoute(player)
   local b = d and M.compass(d.x, d.y)
   if c.requestRoute(nextId, player.lat, player.lon, dest.lat, dest.lon, b) then
     pendingId, lastRequest = nextId, os.clock()
+    debugEvent('route_request', string.format('id=%d from=%.6f,%.6f to=%.6f,%.6f bearing=%s',
+      nextId, player.lat, player.lon, dest.lat, dest.lon, tostring(b)))
     return true
   end
 end
@@ -176,6 +191,9 @@ function M.setDestination(lat, lon, name)
   route, routeError, pendingId, enu, progress, info = nil, nil, nil, nil, 1, nil
   routedTo, lastCheck, lastRequest, targetS = nil, -math.huge, -math.huge, nil
   watch, recoveries, recovering = nil, 0, false
+  holdSince, matchInfo, lastReject, roadHint, restartRoute, blockedOnStop = nil, nil, nil, nil, false, false
+  debugEvent('destination', string.format('lat=%.6f lon=%.6f',lat,lon))
+  clearArrows()
   if auto then
     autoPath, autoSerial = nil, nil
     local veh = playerVeh()
@@ -196,7 +214,8 @@ function M.status()
            remaining = info and info.remaining, eta = info and info.eta, routeVersion = route and route.version or 0,
            progress = progress, planning = pendingId ~= nil, routeError = routeError, pendingId = pendingId,
            autodrive = auto, autoNodes = autoPath and #autoPath or nil, off = info and info.off, arrows = routedTo,
-           autoWaiting = waiting, autoRecoveries = recoveries }
+           autoWaiting = waiting, autoRecoveries = recoveries, autoMatch = matchInfo,
+           autoHoldSeconds = holdSince and math.max(0,os.clock()-holdSince), autoLastReject = lastReject }
 end
 
 -- The planned route for the map: { version, points = {{lat, lon}...}, dist, dur } or nil.
@@ -303,9 +322,18 @@ end
 
 -- Pure: the graph node ids of a planner path ({wp = id | nil}...): its graph stretch, ids in order, repeats dropped.
 function M.pathNodes(path)
-  local out = {}
+  local out, seen = {}, {}
   for _, p in ipairs(path or {}) do
-    if p.wp ~= nil and out[#out] ~= p.wp then out[#out + 1] = p.wp end
+    if p.wp ~= nil then
+      -- Independent point-to-point legs can overlap around an intermediate waypoint.
+      -- Erase the closed detour at the shared node, preserving the connected continuation.
+      local previous = seen[p.wp]
+      if previous then
+        for i = #out, previous + 1, -1 do seen[out[i]], out[i] = nil, nil end
+      else
+        out[#out + 1], seen[p.wp] = p.wp, #out + 1
+      end
+    end
   end
   return out
 end
@@ -346,8 +374,11 @@ function M.autoCommand(ids, final)
     .. ',' .. tostring(M.AUTO_AGGRESSION) .. ',' .. tostring(final == true) .. ')'
 end
 
-function M.onAutodriveRejected(id)
+function M.onAutodriveRejected(id, reason)
   if not auto or id ~= commandId then return end
+  roadHint = autoPath or roadHint
+  lastReject, holdSince = reason or 'vehicle graph rejected', holdSince or os.clock()
+  debugEvent('vehicle_reject', 'command=' .. id .. ' reason=' .. lastReject)
   autoPath, autoSerial, routedTo, waiting = nil, nil, nil, 'graph'
   lastCheck = -math.huge
 end
@@ -369,6 +400,7 @@ end
 -- Pure: the forward road edge under the car, within 8 m (or its wider lane radius), on the same deck.
 function M.edgeUnder(nodes, px, py, hx, hy, pz)
   local best, bd = nil, math.huge
+  local nearest, nearestD, selected = nil, math.huge, nil
   local function try(from, to, e)
     local a, b = nodes[from] and nodes[from].pos, nodes[to] and nodes[to].pos
     if not (a and b) or not drivable(e, from) then return end
@@ -376,12 +408,16 @@ function M.edgeUnder(nodes, px, py, hx, hy, pz)
     local L = math.sqrt(dx * dx + dy * dy)
     if L > 0.1 and (dx * hx + dy * hy) / L > 0.5 then
       local t = math.max(0, math.min(1, ((px - a.x) * dx + (py - a.y) * dy) / (L * L)))
-      -- Parallel roads on different decks can share XY at an interchange.
-      if pz and a.z and b.z and math.abs(pz - (a.z + t * (b.z - a.z))) > 5 then return end
       local qx, qy = a.x + t * dx - px, a.y + t * dy - py
       local d = math.sqrt(qx * qx + qy * qy)
       local radius = math.max(nodes[from].radius or 0, nodes[to].radius or 0)
-      if d < math.max(8, math.min(16, radius + 2)) and d < bd then best, bd = { from, to }, d end
+      local width = math.max(8, math.min(16, radius + 2))
+      local dz = pz and a.z and b.z and pz-(a.z+t*(b.z-a.z)) or 0
+      local reason = math.abs(dz)>5 and 'height' or d>=width and 'lateral' or 'ok'
+      local diag = {from=from,to=to,lateral=d,heightError=dz,width=width,reason=reason}
+      if d<nearestD then nearest,nearestD=diag,d end
+      -- Parallel roads on different decks can share XY at an interchange.
+      if reason=='ok' and d < bd then best, bd, selected = { from, to }, d, diag end
     end
   end
   for id, n in pairs(nodes or {}) do
@@ -390,21 +426,35 @@ function M.edgeUnder(nodes, px, py, hx, hy, pz)
       try(other, id, e)
     end
   end
-  if best then return best[1], best[2] end
+  if best then return best[1], best[2], selected end
+  return nil,nil,nearest
+end
+
+function M.edgeOnPath(ids, nodes, p, d)
+  local own = {}
+  for _, id in ipairs(ids or {}) do
+    if nodes[id] then own[id]={pos=nodes[id].pos,radius=nodes[id].radius,links={}} end
+  end
+  for i=1,#(ids or {})-1 do
+    local a,b=ids[i],ids[i+1]
+    if own[a] and own[b] then own[a].links[b]=M.edge(nodes,a,b) end
+  end
+  return M.edgeUnder(own,p.x,p.y,d.x,d.y,p.z)
 end
 
 function M.startPath(ids, nodes, p, d)
   local hl = math.sqrt(d.x * d.x + d.y * d.y)
   if hl <= 0.1 then return {} end
   -- Capture both results: a non-final function argument only returns its first value in Lua.
-  local a, b = M.edgeUnder(nodes, p.x, p.y, d.x / hl, d.y / hl, p.z)
+  local a, b = M.edgeOnPath(ids, nodes, p, {x=d.x/hl,y=d.y/hl})
+  if not a then a, b = M.edgeUnder(nodes, p.x, p.y, d.x / hl, d.y / hl, p.z) end
   if not a then return {} end
   return M.joinStart(ids, a, b, nodes)
 end
 
--- Pure: the AI's path starting on the edge (a -> b) under the car: the planner's path starts at the node nearest
--- the car, which can be past a turn just ahead; the AI went straight for it, across the corner and into a pole
--- (Fells Point 2026-10-14).
+-- Pure: the connected route including the edge (a -> b) under the car. Keep this rear support
+-- node for graph validation; the vehicle bridge removes passed nodes from actual AI targets.
+-- The forward endpoint b must remain so a turn just ahead is not cut across.
 function M.joinStart(ids, a, b, nodes)
   if not a or #ids == 0 then return ids end
   if not b then return {} end
@@ -458,17 +508,19 @@ function M.vehicleHasGraph(veh)
 end
 
 local function holdRoute(veh, reason)
-  if waiting ~= reason or autoPath then veh:queueLuaCommand(M.pauseCommand()) end
+  if waiting ~= reason or autoPath then
+    debugEvent('hold', 'reason=' .. reason .. ' graph=' .. tostring(graphSerial()))
+    veh:queueLuaCommand(M.pauseCommand())
+  end
+  roadHint, holdSince = autoPath or roadHint, holdSince or os.clock()
   autoPath, autoSerial, waiting = nil, nil, reason
 end
 
-local function driveArrowsPath(gm, nodes)
+local function driveRoutePath(result, nodes)
   local veh = playerVeh()
-  if not veh or not gm.routePlanner or recovering then return end
-  local ids = M.startPath(M.pathNodes(gm.routePlanner.path), nodes, veh:getPosition(), veh:getDirectionVector())
-  -- the planner's path can be older than the graph (planned before the last apply): a step that is no edge now
-  -- disabled the AI's Lua (ai.lua getEdgeLaneConfig, Lauterbrunnen 2026-10-15). The valid part is driven and the
-  -- route planned again at the next check
+  if not veh or recovering or paused then return end
+  local ids = result and result.ids or {}
+  -- Validate once more before handing off; streamed graph changes must not leave a missing edge.
   local valid = M.validFrom(ids, 1, { nodes })
   if #valid < #ids then
     ids, routedTo = valid, nil
@@ -482,15 +534,49 @@ local function driveArrowsPath(gm, nodes)
     routedTo = nil
     return
   end
-  if autoPath and routedTo ~= 'final' then
+  local final = result and result.final and #valid == #result.ids or false
+  local v = veh.getVelocity and veh:getVelocity()
+  local speed = v and math.sqrt(v.x*v.x+v.y*v.y) or 0
+  -- Match the vehicle's endpoint guard with extra room. The old fixed 120 m
+  -- minimum could hold forever when a valid streamed extension was shorter.
+  local resumeLength = math.max(M.AUTO_RESUME_M, speed*1.5+20)
+  if not autoPath and not final and (not result or result.length < resumeLength) then
+    holdRoute(veh, 'route')
+    return
+  end
+  if autoPath and not final then
     local old = M.validFrom(M.startPath(autoPath, nodes, veh:getPosition(), veh:getDirectionVector()), 1, { nodes })
     local same = #old > #ids
     for i = 1, #ids do if old[i] ~= ids[i] then same = false; break end end
     if same then ids = old end -- a momentarily shorter local target is not a new destination
   end
-  veh:queueLuaCommand(M.autoCommand(ids, routedTo == 'final'))
+  veh:queueLuaCommand(M.autoCommand(ids, final))
+  if waiting then debugEvent('resume', string.format('graph=%s nodes=%d length=%.1f final=%s',
+    tostring(graphSerial()),#ids,result.length,tostring(final))) end
   M.trace('path', ids, nodes, veh:getPosition())
-  autoPath, autoSerial, waiting = ids, graphSerial(), nil
+  autoPath, autoSerial, autoFinal, waiting = ids, graphSerial(), final, nil
+  roadHint, holdSince = ids, nil
+end
+
+local matchCache = {}
+local function matchedRoute(e, nodes, here)
+  local veh = playerVeh()
+  if not veh or not nodes then return nil end
+  local p, d = veh:getPosition(), veh:getDirectionVector()
+  local a, b, roadDiag
+  if autoPath or roadHint then
+    -- At a split, keep the known road under the car instead of snapping to an adjacent ramp.
+    a,b,roadDiag=M.edgeOnPath(autoPath or roadHint,nodes,p,d)
+  end
+  if not a then a,b,roadDiag=M.edgeUnder(nodes,p.x,p.y,d.x,d.y,p.z) end
+  local serial=graphSerial()
+  if matchCache.nodes~=nodes or matchCache.serial~=serial then
+    matchCache={nodes=nodes,serial=serial,adj=routepath.graph(nodes)}
+  end
+  local result, diag = routepath.plan(nodes,matchCache.adj,e,here,M.LOOKAHEAD_M,a,b,p)
+  matchInfo = diag
+  if matchInfo then matchInfo.road = roadDiag end
+  return result
 end
 
 -- Pure: the index k of the path edge (ids[k] -> ids[k+1]) nearest (px, py) in nodes (positions), or nil.
@@ -547,8 +633,10 @@ function M.afterGraph(keep, newNodes)
   local p = veh:getPosition()
   M.trace('keep', ids, newNodes, p)
   if #ids >= 2 then
-    veh:queueLuaCommand(M.autoCommand(ids, routedTo == 'final'))
+    autoFinal = autoFinal and #ids == keep.full
+    veh:queueLuaCommand(M.autoCommand(ids, autoFinal))
     autoPath, autoSerial, waiting = ids, graphSerial() + 1, nil
+    roadHint, holdSince = ids, nil
   else
     holdRoute(veh, 'route')
   end
@@ -565,16 +653,8 @@ local function setArrows(key, target, tail, nodes)
   if not gm or not gm.setPath then return end
   if pcall(gm.setPath, target, { clearPathOnReachingTarget = false }) then
     routedTo, arrowsSerial = key, serial
-    -- (not before the route is in: the AI would set off on its own way toward the destination)
-    if auto and route ~= nil and not paused then
-      local ok, err = pcall(driveArrowsPath, gm, nodes) -- before the visual tail: AI drives real graph edges only
-      if not ok then
-        local veh = playerVeh()
-        if veh then holdRoute(veh, 'route') end
-        routedTo = nil
-        if log then log('W', 'beamngEarth', 'Autodrive path: ' .. tostring(err)) end
-      end
-    end
+    -- Ground markers are presentation only. Their point-to-point snapping can select the
+    -- crossing bridge or an exit; the driving path is matched independently to the server route.
     if tail then pcall(appendTail, gm, tail.e, tail.s, tail.z) end
     return true
   end
@@ -583,10 +663,19 @@ end
 function M.setAutodrive(on)
   on = on and true or false
   if on == auto then return auto end
+  if not on then blockedOnStop = waiting ~= nil or stillSince ~= nil end
+  restartRoute = on and blockedOnStop
   auto = on
+  debugEvent(on and 'enabled' or 'disabled', 'restartRoute=' .. tostring(restartRoute))
   autoPath, autoSerial, stillSince, paused = nil, nil, nil, false
+  autoFinal = false
   waiting, watch, recoveries, recovering = nil, nil, 0, false
+  holdSince, lastHeartbeat = nil, -math.huge
   if on then
+    local veh = playerVeh()
+    if veh then veh:queueLuaCommand(M.pauseCommand()) end
+    waiting = 'route'
+    holdSince = os.clock()
     routedTo = nil                       -- the arrows (and the AI's path) set again at the next check
     lastCheck = -math.huge
   else
@@ -609,6 +698,7 @@ local function autoKeep(nodes, now)
   local veh = playerVeh()
   if not veh then return end
   if damage(veh) > M.AUTO_DAMAGE then
+    debugEvent('damage_stop','damage=' .. tostring(damage(veh)))
     M.setAutodrive(false)
     if ui_message then pcall(ui_message, 'Autodrive off: the car is damaged', 6, 'beamngEarthGps') end
     return
@@ -621,6 +711,7 @@ local function autoKeep(nodes, now)
     paused, stillSince = true, nil
     return
   elseif paused then
+    debugEvent('server_ready','resuming route validation')
     paused, routedTo = false, nil         -- back: the path given again
   end
   local v = veh.getVelocity and veh:getVelocity()
@@ -644,17 +735,48 @@ local function watchProgress(here, player, now)
   end
   local loop = now - watch.since >= M.AUTO_LOOP_S and watch.travel >= M.AUTO_LOOP_TRAVEL_M
   local stuck = stillSince and now - stillSince >= M.AUTO_STALL_S
-  if pendingId or not (loop or stuck) then return end
+  local held = waiting and holdSince and now-holdSince >= M.AUTO_HOLD_S
+  -- Streaming normally rebuilds only after movement. Request a fresh graph while stationary
+  -- too: a graph made before road data finished loading otherwise never repairs itself.
+  if held and now-lastRefresh >= M.REROUTE_S then
+    local c=core()
+    if c and c.requestAutodriveRefresh and c.requestAutodriveRefresh() then
+      lastRefresh=now
+      debugEvent('graph_refresh','reason=' .. tostring(waiting))
+    end
+  end
+  if pendingId or not (loop or stuck or held) or (held and now-lastRequest<M.REROUTE_S) then return end
   recoveries = recoveries + 1
   if recoveries > M.AUTO_RECOVERY_LIMIT then
+    debugEvent('recovery_failed','attempts=' .. recoveries .. ' reason=' .. tostring(lastReject or (matchInfo and matchInfo.reason)))
     M.setAutodrive(false)
     if ui_message then pcall(ui_message, 'Autodrive off: unable to find a drivable route from here', 8, 'beamngEarthGps') end
     return
   end
   local veh = playerVeh()
+  debugEvent('recovery', 'attempt=' .. recoveries .. ' reason=' .. (loop and 'loop' or held and 'route_hold' or 'stalled'))
   if veh then holdRoute(veh, 'route') end
   routedTo, stillSince, watch = nil, nil, nil
+  holdSince = now
   recovering = requestRoute(player) == true
+end
+
+local function heartbeat(player, now)
+  if not auto or now-lastHeartbeat<10 then return end
+  lastHeartbeat=now
+  local veh=playerVeh()
+  local p=veh and veh:getPosition() or player
+  local v=veh and veh.getVelocity and veh:getVelocity()
+  local d=veh and veh:getDirectionVector() or {}
+  local speed=v and math.sqrt(v.x*v.x+v.y*v.y) or 0
+  local m=matchInfo or {}
+  local rd=m.road or {}
+  debugEvent('heartbeat',string.format('route=%s graph=%s command=%d pos=%.1f,%.1f,%.1f speed=%.1f remaining=%.1f off=%.1f wait=%s hold=%.1f pending=%s recoveries=%d match=%s edge=%s>%s end=%s nodes=%d length=%.1f startOff=%.1f visited=%d blocked[corridor=%d direction=%d horizon=%d] heading=%.2f,%.2f map=%s roadReason=%s roadHeightError=%.2f roadLateral=%.2f reject=%s',
+    tostring(route and route.version),tostring(graphSerial()),commandId,p.x,p.y,p.z or 0,speed,
+    info and info.remaining or -1,info and info.off or -1,tostring(waiting),holdSince and now-holdSince or 0,
+    tostring(pendingId),recoveries,tostring(m.reason),tostring(m.start),tostring(m.next),tostring(m.endpoint),
+    m.nodes or 0,m.length or 0,m.startOff or -1,m.visited or 0,m.corridor or 0,m.direction or 0,m.horizon or 0,
+    d.x or 0,d.y or 0,tostring(currentMapSerial()),tostring(rd.reason),rd.heightError or 0,rd.lateral or -1,tostring(lastReject)))
 end
 
 local function refreshLead()
@@ -671,8 +793,14 @@ function M.update(anchor, player)
   local now = os.clock()
   if now - lastCheck < M.CHECK_S then return end
   lastCheck = now
-  local sta = rawget(_G, 'simTimeAuthority')
-  if sta and sta.getPause and sta.getPause() then stillSince, watch = nil, nil; return end
+  if auto and restartRoute then
+    restartRoute, blockedOnStop = false, false
+    enu, progress, matchInfo = nil, 1, nil
+    local c=core()
+    if c and c.requestAutodriveRefresh and c.requestAutodriveRefresh() then lastRefresh=now end
+    -- Replace even an outstanding stale request; its old response cannot start the car.
+    recovering = requestRoute(player) == true
+  end
   -- the planned route: asked once (and on re-routes), taken when it arrives
   if pendingId then
     local c = core()
@@ -683,24 +811,37 @@ function M.update(anchor, player)
         routeVersion = routeVersion + 1
         route = { points = r.points, dist = r.dist, dur = r.dur, version = routeVersion }
         routeError, enu, routedTo, targetS, watch, recovering = nil, nil, nil, nil, nil, false
+        debugEvent('route_ready',string.format('version=%d points=%d distance=%.1f',routeVersion,#r.points,r.dist))
       else
         routeError = r.error or 'no route'
+        debugEvent('route_failed',tostring(routeError))
         recovering = false
         if not route then route = false end
       end
     elseif now - lastRequest > 30 then
+      debugEvent('route_timeout','id=' .. tostring(pendingId))
       pendingId = nil                      -- no answer: try again below
       recovering = false
     end
-  elseif route == nil then
+  elseif route == nil or (route == false and now - lastRequest > M.REROUTE_S) then
     requestRoute(player)
+  end
+
+  -- The map/menu may pause physics. Route requests and replies must still run so choosing
+  -- a waypoint displays the route before Autodrive (which closes the map) is pressed.
+  -- Only driving/arrival/progress detection is suspended; pause time is never a stall.
+  local sta = rawget(_G, 'simTimeAuthority')
+  if sta and sta.getPause and sta.getPause() then
+    stillSince, watch = nil, nil
+    if holdSince then holdSince=now end
+    return
   end
 
   local tx, ty = anchor:geodeticToEnu(dest.lat, dest.lon, 0)
   local dx, dy = tx - player.x, ty - player.y
   local dist = math.sqrt(dx * dx + dy * dy)
   info = { dist = dist, bearing = M.bearing(player.x, player.y, tx, ty), remaining = dist }
-  if dist < M.ARRIVE_M then
+  if route == false and dist < M.ARRIVE_M then
     if ui_message then pcall(ui_message, 'Arrived: ' .. (dest.name or 'destination'), 5, 'beamngEarthGps') end
     M.clear()
     return
@@ -716,12 +857,26 @@ function M.update(anchor, player)
     if off > M.OFF_ROUTE_M then i, t, off = M.nearestSegment(e.x, e.y, player.x, player.y, 1, n) end
     progress = i
     local remaining = e.cum[n] - (e.cum[i] + t * (e.cum[i + 1] - e.cum[i]))
+    if dist < M.ARRIVE_M and remaining < M.ARRIVE_M then
+      if ui_message then pcall(ui_message, 'Arrived: ' .. (dest.name or 'destination'), 5, 'beamngEarthGps') end
+      M.clear()
+      return
+    end
     info.remaining = remaining + off
     info.off = off
     if route.dist and route.dist > 0 and route.dur then info.eta = route.dur * remaining / route.dist end
     if off > M.OFF_ROUTE_M and not pendingId and now - lastRequest > M.REROUTE_S then requestRoute(player) end
     local here = e.cum[i] + t * (e.cum[i + 1] - e.cum[i])
     watchProgress(here, player, now)
+    if auto and not paused and not recovering then
+      local ok, err = pcall(function() driveRoutePath(matchedRoute(e, nodes, here), nodes) end)
+      if not ok then
+        local veh = playerVeh()
+        if veh then holdRoute(veh, 'route') end
+        if log then log('W', 'beamngEarth', 'Autodrive route match: ' .. tostring(err)) end
+      end
+    end
+    heartbeat(player,now)
     local tg = nodes and routeTarget(e, nodes, i, t)
     if tg then
       -- set again only when the target moved on by a good stretch (each setPath re-plans the arrows)
@@ -740,13 +895,13 @@ function M.update(anchor, player)
   -- no planned route (yet, or offline), or none of it on the local graph: toward the destination
   -- With a planned route, a disconnected local graph is a loading gap. A nearest-destination
   -- fallback can pick the other carriageway or a dead end and send the car round in circles.
-  if auto and route then
+  if auto then
     local veh = playerVeh()
     if veh and not autoPath then holdRoute(veh, 'route') end
+    heartbeat(player,now)
     routedTo = nil
     return
   end
-  if auto and route == false then watchProgress(-dist, player, now) end
   local id, pos, nd = M.pickNode(nodes, tx, ty)
   if not id then return end
   local final = nd <= M.FINAL_M

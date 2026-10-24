@@ -29,6 +29,8 @@ sl = G.routeSlice(e, 150, 5000, 25)
 T.check(sl[#sl][2] == 100 and #sl == 3, 'a slice past the end stops at the destination')
 local ids = G.pathNodes({ { pos = 1 }, { wp = 'a' }, { wp = 'a' }, { wp = 'b' }, { pos = 2, fixed = true }, { pos = 3 } })
 T.check(#ids == 2 and ids[1] == 'a' and ids[2] == 'b', 'the AI path: the graph nodes of the planner path, in order, once')
+ids = G.pathNodes({{wp='a'},{wp='b'},{wp='c'},{wp='d'},{wp='b'},{wp='e'},{wp='f'}})
+T.check(table.concat(ids, ',') == 'a,b,e,f', 'overlapping waypoint legs erase a closed detour without breaking the continuation')
 local cmd = G.aiCommand({ 'a', 'b"c' })
 T.check(cmd:find('driveUsingPath', 1, true) and cmd:find('"a","b\\"c"', 1, true) and cmd:find('driveInLane = "on"', 1, true),
   'the AI command lists the nodes quoted, in lane')
@@ -125,5 +127,18 @@ do -- the route request carries the car's heading (a nil global here once broke 
   T.check(got and got.b == 90, 'the route request has the heading east: ' .. tostring(got and got.b))
   G.clear()
   beamngEarth_core, getPlayerVehicle = savedCore, savedGet
+end
+do -- The reported stop: good XY/heading, but unconverted graph elevation was 5.12 m above the car.
+  local nodes={a={pos={x=88.38,y=8162.32,z=303.12},radius=5.5,links={b={oneWay=true,inNode='a'}}},
+               b={pos={x=81.94,y=8225.60,z=303.12},radius=5.5,links={}}}
+  local a,b,diag=G.edgeUnder(nodes,90.7,8169.9,-0.10,0.99,298.0)
+  T.check(a==nil and diag and diag.reason=='height' and math.abs(diag.heightError+5.12)<0.01,
+    'road acquisition identifies a height rejection rather than an unexplained missing edge')
+  T.check(diag and math.abs(diag.lateral-3.08)<0.02,
+    'road acquisition diagnostics retain the lateral distance of the rejected edge')
+  nodes.a.pos.z,nodes.b.pos.z=297.89,297.81
+  a,b,diag=G.edgeUnder(nodes,90.7,8169.9,-0.10,0.99,298.0)
+  T.check(a=='a' and b=='b' and diag.reason=='ok',
+    'the stopped position acquires its highway after conversion to local graph height')
 end
 T.done('test_gps')
