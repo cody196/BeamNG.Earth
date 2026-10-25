@@ -10,6 +10,7 @@ import numpy as np
 Profile = namedtuple('Profile', 'travel ramp solid')
 DEFAULT = Profile((3.0, 8.0, .35), (1.2, 2.8, .35), .35)
 PROFILES = {
+    'KY': Profile(DEFAULT.travel, None, DEFAULT.solid),
     'MI': Profile((4.5, 11.5, .4), (1.5, 6.0, .35), .4),
     'MN': Profile((3.1, 12.25, .3), None, .45),
     'WI': Profile((5.15, 10.25, .31), (1.25, 2.9, .3), .32),

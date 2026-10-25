@@ -1,5 +1,6 @@
 """Connected ramp tapers, physical dash dimensions and source-stable clipping."""
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 import sys
 import numpy as np
@@ -28,6 +29,74 @@ def rows(entry=False, reverse=False, side=-1, state='MI', count=1):
 
 
 class MergeTest(unittest.TestCase):
+    def test_longer_merge_stays_on_asphalt_outside_through_lanes(self):
+        for entry in (False, True):
+            for side in (-1, 1):
+                for count in (1, 2):
+                    source = rows(entry, side=side, count=count)
+                    with patch.object(rampmerges, 'EXTEND', 0.):
+                        old = rampmerges.plans(source)[0]
+                    p = rampmerges.plans(source)[0]
+                    self.assertAlmostEqual((p['end']-p['start']) - (old['end']-old['start']), 30.)
+                    np.testing.assert_allclose(p['guide'][-1], old['guide'][-1])
+                    np.testing.assert_allclose(p['outer'][-1], old['outer'][-1])
+                    outer = roads.densify(p['outer'], .25)
+                    _, _, _, lateral, dm = rampmerges.project(p['path'], outer)
+                    dr = rampmerges.project(p['source'], outer)[4]
+                    paint = roadmarkings.profile(p['spec'].state).solid/2
+                    self.assertTrue(np.all((dm <= source[0][1].width/2-paint+.01)
+                                           | (dr <= source[1][1].width/2-paint+.01)))
+                    self.assertTrue(np.all(lateral*p['side'] >= p['edge']-.01))
+
+    def test_separator_paint_does_not_overlap_taper_edge(self):
+        for entry in (False, True):
+            for side in (-1, 1):
+                for count in (1, 2, 3):
+                    p = rampmerges.plans(rows(entry, side=side, count=count))[0]
+                    marks = roadmarkings.paint(rampmerges.chunks([p], BOX))
+                    solid = roadmarkings.profile(p['spec'].state).solid
+                    for ch in marks:
+                        if ch['p'] == 6:
+                            line = roads.densify(np.asarray(ch['n']), .1)
+                            distance = rampmerges.project(p['outer'], line)[4].min()
+                            self.assertGreaterEqual(distance, (solid+ch['w'])/2+.08)
+
+    def test_extension_crosses_connected_source_segment_boundary(self):
+        source = rows()
+        fid, sp, line, lon = source[0]
+        source[0] = fid, sp, np.array([[-2., 0., 10.], [500., 0., 10.]]), lon
+        source.append(('before', sp, np.array([[-500., 0., 10.], [-2., 0., 10.]]), lon))
+        p = rampmerges.plans(source)[0]
+        whole = rampmerges.plans(rows())[0]
+        np.testing.assert_allclose(p['guide'], whole['guide'])
+        np.testing.assert_allclose(p['outer'], whole['outer'])
+        self.assertIn('before', p['mains'])
+
+    def test_adjacent_merge_prevents_extension_overlap(self):
+        source = rows()
+        fid, sp, line, lon = source[1]
+        source.append(('previous_ramp', sp, line + [-55., 0., 0.], lon))
+        plans = rampmerges.plans(source)
+        self.assertEqual(len(plans), 2)
+        earlier, later = sorted(plans, key=lambda p: p['guide'][0, 0])
+        self.assertGreaterEqual(later['guide'][0, 0] - earlier['guide'][-1, 0], .999)
+
+    def test_curved_merge_extension_and_road_edges_stay_on_pavement(self):
+        source = rows()
+        fid, sp, _, lon = source[0]
+        source[0] = (fid, sp, np.array([[-500.,-30.,10.],[-150.,-5.,10.],[0.,0.,10.],
+                                        [80.,0.,10.],[200.,15.,10.],[500.,80.,10.]]), lon)
+        fid, sp, _, lon = source[1]
+        source[1] = (fid, sp, np.array([[0.,0.,10.],[35.,-6.,10.],[75.,-15.,10.],
+                                        [120.,-25.,10.],[200.,-45.,10.]]), lon)
+        p = rampmerges.plans(source)[0]
+        self.assertLess(p['guide'][0, 0], -15.)
+        points = roads.densify(p['outer'], .25)
+        dm = rampmerges.project(p['path'], points)[4]
+        dr = rampmerges.project(p['source'], points)[4]
+        self.assertTrue(np.all((dm <= source[0][1].width/2-.2) | (dr <= source[1][1].width/2-.2)))
+        self.assertTrue(np.all(rampmerges.project(p['path'], points)[3]*p['side'] >= p['edge']-.01))
+
     def test_orange_ramp_edge_is_white_until_pavements_separate(self):
         for entry in (False, True):
             for reverse in (False, True):
@@ -91,7 +160,7 @@ class MergeTest(unittest.TestCase):
                 self.assertAlmostEqual(p['span'][-1], 4.5)
 
     def test_separators_use_notes_dimensions(self):
-        for state in ('', 'MI', 'WI', 'CA', 'MN'):
+        for state in ('', 'MI', 'WI', 'CA', 'MN', 'KY'):
             plans = rampmerges.plans(rows(state=state))
             marks = roadmarkings.paint(rampmerges.chunks(plans, BOX, fixed=True))
             dashed = [c for c in marks if c['p'] == 6]

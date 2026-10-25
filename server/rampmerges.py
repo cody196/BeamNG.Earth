@@ -11,6 +11,8 @@ import roadlayoutcache
 
 STEP = 1.0
 REACH = 400.0
+EXTEND = 30.0       # extra metres along the highway, bounded by available shoulder/other ramps
+PAINT_CLEARANCE = .10
 JOIN = 1.0
 HEIGHT = .75
 _cache = roadlayoutcache.LayoutCache(max_entries=12, max_bytes=24 * 1024 * 1024)
@@ -57,6 +59,8 @@ def _chain(first, station, mains, entry, reach=REACH):
     ids = {fid}
     while roadmarkings.arc(path)[-1] < reach:
         tangent = path[-1, :2] - path[-2, :2]
+        if np.linalg.norm(tangent) < 1e-9:
+            tangent = line[-1, :2] - line[-2, :2]
         tangent /= max(np.linalg.norm(tangent), 1e-9)
         choices = []
         for row in mains:
@@ -75,6 +79,87 @@ def _chain(first, station, mains, entry, reach=REACH):
         ids.add(next_id)
         path = np.vstack([path, p[1:]])
     return section(path, 0., min(reach, roadmarkings.arc(path)[-1])), ids
+
+
+def _extend(plan, main, station, mains, neighbours):
+    """Lengthen a taper onto existing shoulder, without taking a through lane.
+
+    Preserve the exact ramp-edge joins. Only widen within the union of the two
+    pavements, and stop before an adjacent ramp's existing merge footprint.
+    """
+    import roads
+    back, ids = _chain(main, roadmarkings.arc(main[2])[-1] - station, mains,
+                       not plan['entry'], reach=EXTEND)
+    path = np.vstack([back[::-1][:-1], plan['path']])
+    path = path[np.r_[True, np.linalg.norm(np.diff(path[:, :2], axis=0), axis=1) > 1e-6]]
+    old_start, end = project(path, plan['guide'][[0, -1]])[0]
+    start = max(0., old_start - EXTEND)
+    ids = ids | plan['mains']
+    for other in neighbours:
+        if other is plan or not ids.intersection(other['mains']):
+            continue
+        points = np.vstack([other['guide'], other['outer']])
+        s, near, _, lateral, _ = project(path, points)
+        same_side = (lateral * plan['side'] > 0.) & (np.abs(points[:, 2] - near[:, 2]) <= HEIGHT)
+        if not same_side.any():
+            continue
+        lo, hi = s[same_side].min(), s[same_side].max()
+        if hi >= start and lo <= end:
+            if hi >= old_start:
+                return  # already tight: do not extend either lane into this merge
+            start = max(start, hi + 1.)
+    if old_start - start < 1.:
+        return
+    at = np.linspace(start, end, max(3, int(np.ceil(end-start)) + 1))
+    centre = sample(path, at)
+    _, _, tangent, _, _ = project(path, centre)
+    normal = np.c_[-tangent[:, 1], tangent[:, 0]] * plan['side']
+    edge = roads.offset_polyline(path, plan['side'] * plan['edge'])
+    edge_at = project(path, edge)[0]
+    guide = np.column_stack([np.interp(at, edge_at, edge[:, d]) for d in range(3)])
+    # Keep the original curved guide in the mapped part of the merge.
+    original_at = project(path, plan['guide'])[0]
+    original = at >= old_start
+    for d in range(3):
+        guide[original, d] = np.interp(at[original], original_at, plan['guide'][:, d])
+    guide[-1] = plan['guide'][-1]
+    t = (at-start) / (end-start)
+    span = plan['span'][-1] * t*t*(2-t)
+    outer = guide.copy()
+    outer[:, :2] += normal * span[:, None]
+    outer += t[:, None]**3 * (plan['outer'][-1] - outer[-1])
+    # A little extra inset keeps the straight chords between samples inside the
+    # pavement at the concave corner where the two road buffers join.
+    paint = roadmarkings.profile(plan['spec'].state).solid / 2 + .05
+
+    def supported(points):
+        _, q, _, _, dm = project(path, points)
+        _, r, _, _, dr = project(plan['source'], points)
+        return ((dm <= main[1].width/2 - paint) & (np.abs(points[:, 2]-q[:, 2]) <= HEIGHT)
+                | (dr <= plan['spec'].width/2 - paint) & (np.abs(points[:, 2]-r[:, 2]) <= HEIGHT))
+
+    if not supported(guide).all():
+        return
+    # Left shoulders in particular cannot hold a full ramp lane. Limit the
+    # widening to their asphalt until the mapped ramp supplies the extra width.
+    fits = supported(outer)
+    delta = outer-guide
+    scale = np.ones(len(at))
+    limited = np.flatnonzero(~fits)
+    if len(limited):
+        low, high = np.zeros(len(limited)), np.ones(len(limited))
+        for _ in range(16):
+            mid = (low+high)/2
+            ok = supported(guide[limited] + mid[:, None]*delta[limited])
+            low = np.where(ok, mid, low)
+            high = np.where(ok, high, mid)
+        scale[limited] = low
+    outer = guide + scale[:, None]*delta
+    span *= scale
+    if scale[-1] < 1. or np.any(np.diff(span) < -.05):
+        return  # cannot lengthen cleanly: retain the original source-based taper
+    plan.update(path=path, mains=ids, start=float(start), end=float(end),
+                guide=guide, outer=outer, span=span, normal=normal)
 
 
 def _pavement_split(main, station, mains, entry, away, side, width):
@@ -122,7 +207,7 @@ def plans(rows, terminals=None):
     rows = [r for r in rows if len(r[2]) >= 2]
     mains = [r for r in rows if r[1].kind == 'paved' and r[1].oneway and not r[1].link
              and r[1].cls in ('motorway', 'trunk')]
-    out = []
+    out, extensions = [], []
     for fid, sp, source, lon in sorted(rows, key=lambda r: r[0]):
         if not sp.link or not sp.oneway or sp.kind != 'paved':
             continue
@@ -214,6 +299,9 @@ def plans(rows, terminals=None):
                             guide=guide, outer=outer, span=span, normal=normal, spec=sp,
                             # Left/right relative to actual travel, not the OSM vertex order.
                             color='line_yellow' if side * (-1 if entry else 1) > 0 else 'line_white'))
+            extensions.append((main, station))
+    for plan, (main, station) in zip(out, extensions):
+        _extend(plan, main, station, mains, out)
     return out
 
 
@@ -317,7 +405,18 @@ def chunks(layouts, box, fixed=False):
         if profile.ramp:
             length, gap, width = profile.ramp
             look = dict(m='line_white', p=6, tl=length+gap, dash=(length, gap), ramp_merge=kind)
-            lines.append((dict(look, _source=p['guide']), width, p['guide']))
+            # A separator cannot fit at a zero-width tip: start where the paint
+            # clears the solid edge, rather than drawing white strokes on top of it.
+            clearance = (profile.solid + width)/2 + PAINT_CLEARANCE
+            def separator(line, internal=False):
+                def metric(points):
+                    distance = project(p['outer'], points)[4] - clearance
+                    if internal:
+                        distance = np.minimum(distance, project(p['guide'], points)[4] - width - PAINT_CLEARANCE)
+                    return distance
+                for part in _outside(line, metric):
+                    lines.append((dict(look, _source=part), width, part))
+            separator(p['guide'])
             # A multi-lane ramp sheds its additional lanes in sequence as the available width narrows.
             count = p['spec'].lanes or 1
             for k in range(1, count):
@@ -327,7 +426,7 @@ def chunks(layouts, box, fixed=False):
                 keep = np.flatnonzero(offset > .05)
                 if len(keep) >= 2:
                     line = line[keep[0]:]
-                    lines.append((dict(look, _source=line), width, line))
+                    separator(line, internal=True)
         for look, width, line in lines:
             for piece in roads.clip_polyline(line, *box):
                 for part in roads.split(piece):

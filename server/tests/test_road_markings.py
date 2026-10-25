@@ -171,6 +171,29 @@ class PaintTest(unittest.TestCase):
         self.assertFalse(any('dash' in lk for lk, _, _ in ex))
         self.assertEqual(len(ex), 2)
 
+    def test_kentucky_ramps_have_no_dashes_but_highways_keep_dividers(self):
+        from types import SimpleNamespace
+        f = features([[(0, 0), (100, 0)]], ['motorway'])
+        f.lonlat[:] = [[-84.5037, 38.0406], [-84.5027, 38.0406]]
+        f.attrs['subclass'] = np.array(['link'])
+        sp = roads.road_specs(f)[0]
+        self.assertEqual(sp.state, 'KY')
+        self.assertTrue(sp.link)
+        self.assertIsNone(roadmarkings.profile(sp.state).ramp)
+        self.assertEqual(list(signstates.states([38.2527, 38.0406, 36.9685, 39.1031, 36.1627],
+                                                [-85.7585, -84.5037, -86.4808, -84.5120, -86.7816])),
+                         ['KY', 'KY', 'KY', 'OH', 'TN'])
+        for direction in (-1, 1):
+            sp = self.spec('KY', True, direction)
+            self.assertFalse(any('dash' in lk for lk, _, _ in roads.extras(sp, LINE, -85.)))
+            source = [('ramp', sp, LINE, -85.)]
+            tunnel = SimpleNamespace(parts=lambda cells, area: [('ramp', sp, LINE[:, :2], LINE[:, 2], -85.)])
+            for chunks in (roads._deck_chunks(source, (0., -20., 160., 20.)),
+                           roads._tunnel_chunks(tunnel, [], (0., -20., 160., 20.))):
+                self.assertFalse(any(c['p'] == 6 for c in chunks))
+                self.assertTrue(any(c['m'] == 'line_white' for c in chunks))
+        self.assertTrue(any('dash' in lk for lk, _, _ in roads.extras(self.spec('KY'), LINE, -85.)))
+
     def test_phase_survives_tile_cuts_and_fixed_heights(self):
         look, w, source = next(row for row in roads.extras(self.spec(), LINE, -90.) if 'dash' in row[0])
         chunks = []
