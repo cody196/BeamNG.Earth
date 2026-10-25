@@ -110,6 +110,12 @@ def driving_width(spec):
     """The width of a road's driving lanes: the drawn carriageway (spec.width) less its parking lanes and edge
     strips (roads.carriageway adds them), i.e. the class's driving width capped by the drawn one; a four-lane
     urban arterial is all lanes."""
+    if spec.lanes:
+        parked = (spec.urban and spec.cls in roads.PARKING_CLASSES
+                  and not (not spec.oneway and spec.cls in roads.URBAN_ARTERIAL))
+        margin = ((roads.PARKING_M if spec.oneway else 2 * roads.PARKING_M) if parked
+                  else 2 * roads.edge_margin(spec))
+        return float(max(1.0, spec.width - margin))
     if spec.urban and not spec.oneway and spec.cls in roads.URBAN_ARTERIAL:
         return float(spec.width)
     w = roads.STYLE.get(spec.cls, roads.STYLE["unknown"])[0]
@@ -122,11 +128,13 @@ def driving_width(spec):
 
 def _lanes(width, oneway, known=None):
     """Lanes (with the direction, against it) of a road whose driving lanes are `width` wide (known: OpenStreetMap's
-    lane count, both directions, osmtags.py): the same number each way on a two-way road (a lopsided split put the AI's
-    centre line off the road's)."""
+    lane count, both directions, osmtags.py). Odd mapped totals keep their extra lane;
+    without directional tags it is assigned along the geometry, as in roads.extras."""
     n = int(known) if known else max(1, int(round(width / LANE_W_M)))
     if oneway:
         return n, 0
+    if known and n >= 2:
+        return (n + 1) // 2, n // 2
     k = max(1, n // 2)
     return k, k
 

@@ -41,7 +41,7 @@ PATH = "osm/highways.parquet"   # (the path DuckDB reads it under)
 # The query: OSM way id and the parsed tags (NULL where absent or not understood).
 _NUM = r"'^\s*([0-9]+(?:\.[0-9]+)?)'"
 COLUMNS = {
-    "lanes": f"TRY_CAST(regexp_extract(lanes, '^\\s*([0-9]+)', 1) AS INTEGER)",
+    "lanes": "TRY_CAST(regexp_extract(lanes, '^\\s*([0-9]+)\\s*$', 1) AS INTEGER)",
     "width": (f"TRY_CAST(regexp_extract(width, {_NUM}, 1) AS DOUBLE) * "
               "CASE WHEN width LIKE '%ft%' OR width LIKE '%''%' THEN 0.3048 ELSE 1.0 END"),
     "maxspeed": (f"TRY_CAST(regexp_extract(maxspeed, {_NUM}, 1) AS DOUBLE) * "
@@ -53,7 +53,7 @@ COLUMNS = {
     "osm_oneway": "oneway",
     "osm_layer": "TRY_CAST(layer AS INTEGER)",
 }
-USED = {"id", "bbox", "lanes", "width", "maxspeed", "sidewalk", "lit", "smoothness", "surface", "oneway", "layer"}
+USED = {"id", "type", "bbox", "lanes", "width", "maxspeed", "sidewalk", "lit", "smoothness", "surface", "oneway", "layer"}
 FLOATS = ("lanes", "width", "maxspeed", "osm_layer")
 TEXTS = ("sidewalk", "lit", "smoothness", "osm_surface", "osm_oneway")
 
@@ -214,10 +214,10 @@ class OsmTags:
             # only the ways with a tag the roads use (and the raceways): join() treats a way without one as one not
             # here, and building a dict per way of every highway in the cell was most of this thread's CPU
             # (osmtags, 14 CPU-s of a Deck's teleport, 2026-10-23)
-            some = " OR ".join(f"{c} IS NOT NULL" for c in sorted(USED - {"id", "bbox"}))
+            some = " OR ".join(f"{c} IS NOT NULL" for c in sorted(USED - {"id", "type", "bbox"}))
             rows = con.execute(f"""SELECT id, highway = 'raceway', file_row_number, {cols}
                 FROM read_parquet({uri}, file_row_number = true)
-                WHERE ({only}) AND {box} AND (highway = 'raceway' OR {some})""").fetchall()
+                WHERE type = 'way' AND ({only}) AND {box} AND (highway = 'raceway' OR {some})""").fetchall()
             race = [r[2] for r in rows if r[1]]
             got = []
             if race:            # (rare: the raceways' own columns and geometry, of their row groups only)

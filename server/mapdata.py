@@ -79,7 +79,9 @@ VERSION = 2                     # pipeline version: bump when what a cell's laye
 # the "oneway" rule (Overture access_restrictions by heading)
 # roads 3: OpenStreetMap's lanes, width, sidewalk, maxspeed... joined by way id (osmtags.py)
 # roads 4: OpenStreetMap's raceways appended (osmtags.raceways, GitHub #143)
-LAYER_VERSIONS = {"roads": 4}
+# roads 5: select OSM way sources regardless of source order; exclude node/relation
+# ID collisions and ambiguous lane counts in Layercake. Rebuild old joined cells.
+LAYER_VERSIONS = {"roads": 5}
                                 # (2: clipped polygon pieces `own`ed by their cell, exact cell edges,
                                 # the exact no-area test of clipped rings)
 VECTOR_LAYERS = ("roads", "connectors", "buildings", "water", "land_use", "infrastructure", "building_parts")
@@ -233,8 +235,11 @@ class MapData:
         self._mem = OrderedDict()           # (cell, layer) -> (decoded layer, provenance, bytes): cell()'s LRU
         self._mem_bytes = 0
         self._mem_lock = threading.Lock()
+        import highwaysigns
+        self.highway_signs = highwaysigns.Source(self)
 
     def close(self):
+        self.highway_signs.close()
         self.pool.shutdown(wait=False)
         self.overture.close()
 
