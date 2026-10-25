@@ -82,6 +82,11 @@ the mod, report problems, and get an IP to join a BeamMP.Earth server (see [Mult
   on the game's minimap (bottom left), which shows the roads around you.
 - **Autodrive**: the car drives itself along the GPS route (in lane, legal speed, minding traffic).
 - Saved places and recent places.
+- Driving position and heading autosave every 10 seconds and when leaving the level. The default
+  **Where you left off** spawn resumes the latest checkpoint. In **Settings > BeamNG.Earth > Driving progress**,
+  adjust the interval (1–300 seconds) or disable autosave/resume. Two alternating checkpoints in the game's
+  settings folder preserve the previous save if a crash interrupts a write. Saved-place and random spawns
+  still take precedence when explicitly selected.
 
 **Interface and tools**
 - A slim status bar (street, town, country, and under it the loading progress of the ground, roads & buildings, trees and

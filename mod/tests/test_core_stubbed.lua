@@ -811,6 +811,7 @@ T.check(cs.clears == 1 and cs.clearedBytes == 1034567890 and cs.usedBytes == 2e8
 serverSend({ type = 'cache', v = 1, usedBytes = 210000000, capBytes = 0, files = 13, ready = true, managed = true })
 frames(2)
 T.check(core.cacheState().clears == 1 and core.cacheState().clearedBytes == 1034567890, 'later usage keeps the last clear')
+
 core.reconnect()
 T.check(core.cacheState() == nil and not core.cacheClear(), 'disconnected: numbers gone, no request sent')
 beamngEarth_settings = nil
@@ -820,5 +821,100 @@ T.check(sky.atmoPlanetRadius == 6360 and scenetree.theLevelInfo.visibleDistance 
   'unload: the level keeps running with its own sky and the 100 km view distance')
 T.check(scenetree.findObject('bngEarthTerrain') == nil, 'terrain deleted on unload')
 T.check(#S.liveOf('Material') == 0 and #S.liveOf('TSStatic') == 0, 'far tiles and their materials deleted on unload')
+
+do -- Driving progress: real lifecycle, network reply, road readiness, placement and periodic saves.
+  core.onClientEndMission()
+  local resume = require('beamngEarth/resume')
+  local settings = require('beamngEarth/settings')
+  local roads = require('beamngEarth/roads')
+  local files, saves = {}, 0
+  jsonReadFile = function(path) return files[path] end
+  jsonWriteFile = function(path, value)
+    files[path] = value
+    if path == resume.FILES[1] or path == resume.FILES[2] then saves = saves + 1 end
+    return true
+  end
+  files[resume.FILES[1]] = {version=1, sequence=1, lat=42.96484, lon=-83.85241, height=121, heading=137}
+  settings.set('positionSaveInterval', 1)
+  local ready, placedDir = false, nil
+  local oldSettled, oldRay, oldQuat = roads.settledFor, castRayStatic, quatFromDir
+  roads.settledFor = function() return ready end
+  castRayStatic = function(from, _, reach)
+    local d = from.z - 120
+    return d >= 0 and d < reach and d or reach
+  end
+  quatFromDir = function(direction) placedDir = direction; return quat(0,0,0,1) end
+  veh.engineLag, veh.vel = 'sync', vec3(0,0,0)
+  core.onClientStartMission()
+  frames(3)
+  serverSend({type='hello',protocol=4,format=4,cells=64,sessionId='resume',farFormat='cdae',
+    material='bngEarthFar_v3',nearVisual='terrain'})
+  frames(5)
+  local request = last('prepare_anchor')
+  T.near(request.lat,42.96484,1e-8,'resume requests saved latitude')
+  T.near(request.lon,-83.85241,1e-8,'resume requests saved longitude')
+  T.check(not core.saveDrivingPosition(100,true) and saves==0,'temporary startup pose cannot overwrite checkpoint')
+  serverSend({type='anchor_ready', requestId=request.requestId, anchorId=30, lat=request.lat, lon=request.lon,
+    groundZ=100, terrain=terrainMsg(0,0,'/temp/resume.png',0)})
+  frames(15)
+  T.near(placedDir.x,math.sin(math.rad(137)),1e-6,'initial placement restores heading x')
+  T.near(placedDir.y,math.cos(math.rad(137)),1e-6,'initial placement restores heading y')
+  T.check(not core.saveDrivingPosition(100,true) and saves==0,'road loading cannot overwrite checkpoint')
+  ready=true
+  frames(3)
+  T.near(veh.pos.z,121,1e-5,'saved bridge height restored after collision is ready')
+  T.near(placedDir.x,math.sin(math.rad(137)),1e-6,'final floor placement retains saved heading')
+  veh.getDirectionVector=function() return vec3(-1,0,0) end
+  frames(90)
+  T.check(saves>0,'onUpdate automatically saves at configured interval')
+  veh.pos=vec3(10,20,121)
+  frames(25)
+  local saved=resume.load()
+  local expectedLat,expectedLon=geodesy.newAnchor(request.lat,request.lon):enuToGeodetic(10,20,121)
+  T.near(saved.lat,expectedLat,1e-8,'driven latitude saved, not last teleport destination')
+  T.near(saved.lon,expectedLon,1e-8,'driven longitude saved')
+  T.near(saved.heading,270,0.001,'current vehicle heading saved')
+  local count=saves
+  veh.pos=vec3(30,40,121)
+  core.onClientEndMission()
+  T.check(saves==count+1,'level exit forces a final checkpoint')
+  saved=resume.load()
+  expectedLat,expectedLon=geodesy.newAnchor(request.lat,request.lon):enuToGeodetic(30,40,121)
+  T.near(saved.lat,expectedLat,1e-8,'exit saves latest position before resetting state')
+  core.onClientStartMission()
+  frames(3)
+  request=last('prepare_anchor')
+  T.near(request.lat,saved.lat,1e-8,'next level load automatically resumes latest checkpoint')
+  -- Vehicle creation can lag behind anchor_ready. Keep the placement pending until one exists.
+  local oldGet=getPlayerVehicle
+  getPlayerVehicle=function() return nil end
+  placedDir=nil
+  serverSend({type='anchor_ready', requestId=request.requestId, anchorId=31, lat=request.lat, lon=request.lon,
+    groundZ=120, terrain=terrainMsg(0,0,'/temp/resume2.png',0)})
+  frames(10)
+  T.check(placedDir==nil,'resume waits for vehicle creation')
+  getPlayerVehicle=oldGet
+  frames(4)
+  T.check(placedDir and placedDir.x < -0.99,'late-spawned vehicle receives saved heading')
+  core.onClientEndMission()
+  local levelinfo = require('beamngEarth/levelinfo')
+  files[levelinfo.GAME_STATE] = {levels={beamng_earth={defaultSpawnPointName=levelinfo.RANDOM}}}
+  local randomCount = #received('random_place')
+  core.onClientStartMission()
+  frames(3)
+  T.check(#received('random_place')==randomCount+1,'explicit random spawn takes precedence over resume')
+  core.onClientEndMission()
+  files[levelinfo.GAME_STATE] = nil
+  settings.set('autoResume',false)
+  require('beamngEarth/ui').setLatLon(40,-80)
+  core.onClientStartMission()
+  frames(3)
+  T.near(last('prepare_anchor').lat,40,1e-8,'disabled resume uses ordinary start destination')
+  T.check(not core.saveDrivingPosition(100,true),'disabled autosave does not write')
+  core.onClientEndMission()
+  settings.set('autoResume',true)
+  roads.settledFor, castRayStatic, quatFromDir = oldSettled, oldRay, oldQuat
+  jsonReadFile, jsonWriteFile = nil, nil
+end
 
 T.done('test_core_stubbed')

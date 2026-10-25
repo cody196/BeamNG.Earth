@@ -58,7 +58,7 @@ function M.build(placeList, hasPreview)
   local info = copy(M.BASE)
   local sp = {
     { objectname = M.DEFAULT, translationId = 'Where you left off', preview = M.PREVIEW,
-      description = 'The last place you teleported to.' },
+      description = 'Resume your last saved driving position and heading (when position autosave is enabled).' },
     { objectname = M.RANDOM, translationId = 'Random location', preview = M.PREVIEW,
       description = 'A road somewhere in the world, picked at random each time.' },
   }

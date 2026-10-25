@@ -226,6 +226,13 @@ let lastWriteAt = 0 // a poll answered just after a uiSet may carry the value fr
 // Mirrors lua/ge/extensions/beamngEarth/settings.lua SCHEMA (the Lua side validates and clamps).
 const settingsSchema = [
   {
+    name: "Driving progress",
+    items: [
+      { id: "autoResume", type: "bool", default: true, name: "Save and restore driving position", desc: "Automatically save your vehicle position and heading. The default Where you left off spawn restores the latest checkpoint. Choosing a saved place or random spawn takes precedence." },
+      { id: "positionSaveInterval", type: "float", min: 1, max: 300, step: 1, default: 10, name: "Position autosave interval (seconds)", desc: "How often your position is saved while driving, so you can resume after a crash. Your position is also saved when leaving the level normally." },
+    ],
+  },
+  {
     name: "Connection",
     items: [
       { id: "connection", type: "info", name: "Companion server", desc: "State of the connection to the BeamNG.Earth companion server (127.0.0.1:47613) and the session id it gave this game." },
