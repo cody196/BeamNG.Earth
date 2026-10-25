@@ -278,7 +278,7 @@ class BuildTileTest(unittest.TestCase):
         self.assertEqual(s[2].width, roads.LINK_M[2], "a two-way slip road")
         self.assertEqual(roads.bridge_specs(features([[(0, 0), (100, 0)]], ["motorway"])), [None])
 
-    def test_motorway_lanes_rural_two_urban_three(self):
+    def test_unknown_motorway_lanes_stay_two_in_town_and_country(self):
         """GitHub #43: every US Interstate had three lanes a direction, rural ones mostly have two; a rural road's edge
         strips were counted as lanes (a rural divided trunk had three too)."""
         pts = np.array([(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)])
@@ -289,11 +289,11 @@ class BuildTileTest(unittest.TestCase):
             return n + 1, sp
         n, rural = lanes("motorway", False)
         self.assertEqual(n, 2, "rural motorway carriageway")
-        self.assertAlmostEqual(rural.width, roads.MOTORWAY_RURAL_M + 2 * roads.SHOULDER_M)
+        self.assertAlmostEqual(rural.width, roads.MOTORWAY_RURAL_M + roads.SHOULDER_SCALE_SUM * roads.SHOULDER_M)
         edges = [line[0][1] for look, w, line in roads.extras(rural, pts, -100.0) if look["p"] == roads.EDGE_LINE["p"]]
-        self.assertEqual(sorted(round(abs(y), 2) for y in edges), [round(roads.MOTORWAY_RURAL_M / 2, 2)] * 2,
+        self.assertEqual(sorted(round(abs(y-roads.driving_offset(rural)), 2) for y in edges), [round(roads.MOTORWAY_RURAL_M / 2, 2)] * 2,
                          "edge lines between the lanes and the shoulders")
-        self.assertEqual(lanes("motorway", True)[0], 3, "urban motorway carriageway")
+        self.assertEqual(lanes("motorway", True)[0], 2, "urban land cover cannot invent a third lane")
         self.assertEqual(lanes("trunk", False)[0], 2, "rural divided trunk")
         # a ramp (one lane, LINK_M): its edge lines a lane apart, not inside the motorway's shoulders (GitHub #107)
         ramp = roads.Spec(roads.LINK_M[1], "paved", False, "motorway", True, 2.5, 1)

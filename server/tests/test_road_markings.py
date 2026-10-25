@@ -19,6 +19,73 @@ LINE = np.array([[0., 0., 10.], [160., 0., 10.]])
 
 
 class LaneGeometryTest(unittest.TestCase):
+    def test_asymmetric_shoulders_follow_travel_direction(self):
+        for link, left, right, lane in ((False, 1.5, 4.5, 4.), (True, .875, 2.625, 4.5)):
+            for direction in (1, -1):
+                width = roads.carriageway('motorway', 'paved', False, oneway=True, lanes=2, link=link)
+                sp = roads.Spec(width, 'paved', False, 'motorway', True, dir=direction, lanes=2, link=link)
+                ex = roads.extras(sp, LINE, -85.)
+                edges = {lk['edge_side']: p[0, 1] for lk, _, p in ex if 'edge_side' in lk}
+                self.assertAlmostEqual(width/2-direction*edges[direction], left)
+                self.assertAlmostEqual(width/2+direction*edges[-direction], right)
+                divider = next(p[0, 1] for lk, _, p in ex if 'dash' in lk)
+                self.assertAlmostEqual(abs(edges[1]-divider), lane)
+                self.assertAlmostEqual(abs(edges[-1]-divider), lane)
+                self.assertAlmostEqual(divider, roads.driving_offset(sp))
+        width = roads.carriageway('primary', 'paved', False, oneway=False, lanes=2, link=True)
+        two_way = roads.Spec(width, 'paved', False, 'primary', lanes=2, link=True)
+        self.assertEqual(roads.driving_offset(two_way), 0.)
+        self.assertEqual(roads.edge_margin(two_way), 1.75)
+
+    def test_wider_ramps_keep_all_lanes_between_the_shoulders(self):
+        import grading
+        for cls in ('motorway', 'trunk', 'primary'):
+            for count in (None, 1, 2, 3):
+                for level in ('ground', 'bridge', 'tunnel'):
+                    for urban in (False, True):
+                        with self.subTest(cls=cls, count=count, level=level, urban=urban):
+                            tags = {} if urban else {'width': 6.0}
+                            if count is not None:
+                                tags['lanes'] = count
+                            f = tagged([[(0, 0), (160, 0)]], [cls], ['w1@1'], {1: tags})
+                            f.attrs['subclass'] = np.array(['link'])
+                            f.rules['oneway'] = rules([(0, 1)], 'float')
+                            if level != 'ground':
+                                f.rules['flags'] = rules([(0, 'is_' + level)])
+                            if level == 'ground':
+                                sp = roads.road_specs(f, urban_fn=lambda lat, lon: np.full(np.shape(lat), urban))[0]
+                                self.assertEqual(sp.urban, urban)
+                            else:
+                                sp = {'bridge': roads.bridge_specs, 'tunnel': roads.tunnel_specs}[level](f)[0]
+                            sp = sp._replace(urban=urban, state='MI')
+                            n = count or 1
+                            self.assertEqual(sp.width, n * 4.5 + 3.5)
+                            self.assertAlmostEqual(navgraph.driving_width(sp), n * 4.5)
+                            ex = roads.extras(sp, LINE, -84.97)
+                            edges = [p[0, 1] for lk, _, p in ex if lk['p'] == roads.EDGE_LINE['p']]
+                            self.assertAlmostEqual(max(edges) - min(edges), n * 4.5)
+                            self.assertAlmostEqual(sp.width / 2 - max(edges), .875)
+                            self.assertAlmostEqual(sp.width / 2 + min(edges), 2.625)
+                            self.assertEqual(sum('dash' in lk for lk, _, _ in ex), n - 1)
+                            self.assertFalse(roads.has_sidewalks(sp))
+                            plan = grading._plan(LINE[:, :2], LINE[:, 2], sp)
+                            self.assertAlmostEqual(plan.road_half * 2, sp.width)
+
+    def test_motorway_lane_width_and_shoulders_in_town_and_country(self):
+        for urban in (False, True):
+            for count in (1, 2, 4):
+                width = roads.carriageway('motorway', 'paved', urban, 8.0, True, count)
+                sp = roads.Spec(width, 'paved', urban, 'motorway', True, lanes=count)
+                self.assertEqual(width, count * 4.0 + 6.)
+                self.assertEqual(roads.edge_margin(sp), 3.)
+                self.assertEqual(navgraph.driving_width(sp), count * 4.0)
+                ex = roads.extras(sp, LINE, -84.97)
+                edges = [p[0, 1] for lk, _, p in ex if lk['p'] == roads.EDGE_LINE['p']]
+                self.assertAlmostEqual(max(edges) - min(edges), count * 4.0)
+                constrained = sp._replace(width=count * 4.0 + 1.0)
+                self.assertEqual(roads.edge_margin(constrained), .5)
+                self.assertEqual(navgraph.driving_width(constrained), count * 4.0)
+
     def test_mapped_counts_on_every_road_level(self):
         for cls in ('motorway', 'trunk', 'secondary', 'residential'):
             for count in (1, 2, 3, 4, 5, 14):
@@ -43,17 +110,17 @@ class LaneGeometryTest(unittest.TestCase):
             self.assertEqual(sum('dash' in lk for lk, _, _ in ex), count - 2)
             centers = [ln[0, 1] for lk, _, ln in ex if lk['m'] == 'line_yellow']
             self.assertEqual(len(centers), 2)
-            self.assertAlmostEqual(np.mean(centers), 3.3 / 2)
+            self.assertAlmostEqual(np.mean(centers), 3.5 / 2)
             self.assertEqual(sum(navgraph._lanes(navgraph.driving_width(sp), False, sp.lanes)), count)
 
-    def test_link_attribute_and_osm_deck_width(self):
+    def test_link_attribute_and_minimum_deck_width(self):
         f = tagged([[(0, 0), (160, 0)]], ['motorway'], ['w1@1'], {1: {'lanes': 2, 'width': 10.5}})
         f.attrs['subclass'] = np.array(['link'])
         f.rules['oneway'] = rules([(0, 1)], 'float')
         f.rules['flags'] = rules([(0, 'is_bridge')])
         sp = roads.bridge_specs(f)[0]
         self.assertTrue(sp.link)
-        self.assertEqual(sp.width, 10.5)
+        self.assertEqual(sp.width, 12.5, 'two 4.5 m ramp lanes plus 0.875 m left / 2.625 m right shoulders')
         look = next(lk for lk, _, _ in roads.extras(sp, LINE, -76.) if 'dash' in lk)
         self.assertEqual(look['dash'], (1.2, 2.8))
 
@@ -126,14 +193,14 @@ class PaintTest(unittest.TestCase):
 
     def test_two_way_bridge_and_tunnel_follow_left_hand_lane_split(self):
         from types import SimpleNamespace
-        sp = roads.Spec(11.9, 'paved', False, 'secondary', lanes=3)
+        sp = roads.Spec(13.0, 'paved', False, 'secondary', lanes=3)
         tunnels = SimpleNamespace(parts=lambda cells, box: [('t', sp, LINE[:, :2], LINE[:, 2], -90.)])
         box = (0., -20., 40., 20.)
         for chunks in (roads._deck_chunks([('b', sp, LINE, -90.)], box, left_hand=True),
                        roads._tunnel_chunks(tunnels, [], box, left_hand=True)):
             centers = [c['n'][0][1] for c in chunks if c['m'] == 'line_yellow']
             self.assertEqual(len(centers), 2)
-            self.assertAlmostEqual(np.mean(centers), -1.65, places=3)
+            self.assertAlmostEqual(np.mean(centers), -1.75, places=3)
 
 
 if __name__ == '__main__':

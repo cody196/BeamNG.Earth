@@ -8,7 +8,8 @@ Layercake publishes every OSM highway as one GeoParquet file (https://layercake.
 ODbL, ~29 GB, 2,467 row groups, spatially clustered, rebuilt about weekly), with the tags as columns and a bbox struct.
 Like overture.py, only what a cell needs is read, through rangeread (netfetch's limits, the block cache), with DuckDB
 reading the blocks: the footer once (9 MB), the bbox columns of the row groups whose statistics touch the cell, then
-the tag columns of the row groups that hold a matching way (no geometry). The tag values are parsed in the query
+the tag columns of the row groups that hold a matching way. Tagged lane geometries support a conservative fallback
+when Overture references a replaced OSM way. The tag values are parsed in the query
 (unambiguous integer lanes only, width "7 m" / "23'" -> metres, maxspeed "30 mph" -> km/h).
 
 The file is rewritten in place: a version is pinned by its ETag (the cache directory; every range request carries
@@ -16,7 +17,7 @@ If-Match, rangeread.Changed when it moved on), and the next version is taken on 
 
 A layer of its own is not needed: mapdata joins the tags into the roads layer when it builds a cell (all processes
 read the same cell file, so a road's lanes and width agree everywhere). Unreachable: the cell keeps no tags and the
-roads use their width guesses (roads.carriageway), as before.
+roads use temporary fallback counts; mapdata retries incomplete enrichment rather than caching guesses forever.
 """
 import logging
 import os
@@ -35,7 +36,7 @@ log = logging.getLogger("earthd.mapdata")
 URL = "https://data.openstreetmap.us/layercake/highways.parquet"
 HOST = "data.openstreetmap.us"
 VERSION_TTL_S = 7 * 86400       # a pinned version is checked again after this long (the file changes ~weekly)
-RETRY_S = 3600                  # the source unreachable: asked again after this long (offline, blocked, gone)
+RETRY_S = 60                    # a transient failure must not suppress lane data for the rest of a drive
 PATH = "osm/highways.parquet"   # (the path DuckDB reads it under)
 
 # The query: OSM way id and the parsed tags (NULL where absent or not understood).
@@ -56,6 +57,11 @@ COLUMNS = {
 USED = {"id", "type", "bbox", "lanes", "width", "maxspeed", "sidewalk", "lit", "smoothness", "surface", "oneway", "layer"}
 FLOATS = ("lanes", "width", "maxspeed", "osm_layer")
 TEXTS = ("sidewalk", "lit", "smoothness", "osm_surface", "osm_oneway")
+
+
+class TagMap(dict):
+    """Keep useful received tags while asking mapdata to retry incomplete enrichment."""
+    incomplete = False
 
 
 # Racetracks (GitHub #143): Overture's transportation theme has no highway=raceway (Daytona's oval and road course, the
@@ -215,10 +221,38 @@ class OsmTags:
             # here, and building a dict per way of every highway in the cell was most of this thread's CPU
             # (osmtags, 14 CPU-s of a Deck's teleport, 2026-10-23)
             some = " OR ".join(f"{c} IS NOT NULL" for c in sorted(USED - {"id", "type", "bbox"}))
-            rows = con.execute(f"""SELECT id, highway = 'raceway', file_row_number, {cols}
+            rows = con.execute(f"""SELECT id, highway = 'raceway', file_row_number, {cols}, highway
                 FROM read_parquet({uri}, file_row_number = true)
                 WHERE type = 'way' AND ({only}) AND {box} AND (highway = 'raceway' OR {some})""").fetchall()
             race = [r[2] for r in rows if r[1]]
+            # A source way can have been split/deleted since the Overture release.
+            # Keep current tagged-way geometry for a conservative spatial fallback.
+            geometry = {}
+            geometry_failed = False
+            lane_rows = [r[2] for r in rows if r[3] is not None]
+            if lane_rows and any('geometry' in groups[rg]['cols'] for rg in cand):
+                try:
+                    hit = [rg for rg in cand if any(groups[rg]['first'] <= r < groups[rg]['first'] + groups[rg]['n']
+                                                   for r in lane_rows)]
+                    rd._fetch(files, {PATH: [v for rg in hit for v in groups[rg]['cols'].get('geometry', [])]}, kind)
+                    try:
+                        con.execute('SET enable_geoparquet_conversion = false')
+                    except Exception:
+                        pass
+                    wanted = ', '.join(str(int(r)) for r in lane_rows)
+                    for wid, wkb in con.execute(f'SELECT id, geometry FROM read_parquet({uri}, file_row_number=true) '
+                                                f'WHERE file_row_number IN ({wanted})').fetchall():
+                        if wkb is not None:
+                            p = _linestring(bytes(wkb))
+                            if p is not None:
+                                geometry[int(wid)] = p
+                except rangeread.Changed:
+                    raise
+                except Exception as e:
+                    if any(isinstance(err, rangeread.Changed) for err in errors):
+                        raise next(err for err in errors if isinstance(err, rangeread.Changed))
+                    log.warning('osmtags: geometry fallback unavailable; keeping received way tags: %s', e)
+                    geometry_failed = True
             got = []
             if race:            # (rare: the raceways' own columns and geometry, of their row groups only)
                 hit = sorted({rg for r in race for rg in cand
@@ -240,8 +274,11 @@ class OsmTags:
             raise
         finally:
             con.close()
-        names = list(COLUMNS)
-        tags = {int(r[0]): {k: v for k, v in zip(names, r[3:]) if v is not None} for r in rows}
+        names = list(COLUMNS) + ['_highway']
+        tags = TagMap({int(r[0]): {k: v for k, v in zip(names, r[3:]) if v is not None} for r in rows})
+        tags.incomplete = geometry_failed
+        for wid, p in geometry.items():
+            tags[wid]['_coords'] = p
         ways = []
         for row in got:
             coords = _linestring(bytes(row[-1]))
@@ -330,4 +367,9 @@ def join(feats, tags):
     for c in TEXTS:
         feats.attrs[c if c.startswith("osm_") else "osm_" + c] = mg.text_column(
             [str(tags.get(w, {}).get(c, "")) if w is not None else "" for w in ids])
+    import roadlanes
+    roadlanes.resolve(feats, tags, ids)
+    # A refresh must also invalidate derived road/deck specs on a reused object.
+    for key in ('_road_specs', '_bridge_specs', '_tunnel_specs'):
+        feats.__dict__.pop(key, None)
     return feats

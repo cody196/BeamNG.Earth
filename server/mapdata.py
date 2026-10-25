@@ -81,7 +81,10 @@ VERSION = 2                     # pipeline version: bump when what a cell's laye
 # roads 4: OpenStreetMap's raceways appended (osmtags.raceways, GitHub #143)
 # roads 5: select OSM way sources regardless of source order; exclude node/relation
 # ID collisions and ambiguous lane counts in Layercake. Rebuild old joined cells.
-LAYER_VERSIONS = {"roads": 5}
+# roads 6: retry failed OSM enrichment, spatially recover replaced way IDs and
+# resolve connected road/bridge counts before any renderer makes its specs.
+LAYER_VERSIONS = {"roads": 6}
+OSM_RETRY_S = 60.0
                                 # (2: clipped polygon pieces `own`ed by their cell, exact cell edges,
                                 # the exact no-area test of clipped rings)
 VECTOR_LAYERS = ("roads", "connectors", "buildings", "water", "land_use", "infrastructure", "building_parts")
@@ -234,6 +237,7 @@ class MapData:
         self.pool = ThreadPoolExecutor(LAYER_THREADS, thread_name_prefix="mapdata-layer")
         self._mem = OrderedDict()           # (cell, layer) -> (decoded layer, provenance, bytes): cell()'s LRU
         self._mem_bytes = 0
+        self._mem_retry = {}
         self._mem_lock = threading.Lock()
         import highwaysigns
         self.highway_signs = highwaysigns.Source(self)
@@ -314,6 +318,8 @@ class MapData:
         if "provenance" not in arrays:
             log.warning("mapdata: %s has no provenance record: rebuilding it", path)
             return None
+        if float(arrays.get('_osm_retry_at', float('inf'))) <= time.time():
+            return None
         return arrays
 
     def _store(self, path, arrays):
@@ -328,8 +334,18 @@ class MapData:
             # the roads' OpenStreetMap tags are read alongside Overture's (each half a fresh cell's wait)
             osm = self._osm_pool().submit(self._osm_cell, key, kind) if layer == "roads" else None
             feats, sources = self.overture.query(layer, key, kind)
+            osm_ok = True
             if osm is not None:
-                feats = self._osm(feats, osm.result())
+                result = osm.result()
+                osm_ok = result is not None and not getattr(result[0], 'incomplete', False)
+                feats = self._osm(feats, result if result is not None else ({}, []))
+                counts = feats.attrs.get('lane_count', np.full(len(feats), np.nan))
+                source = feats.attrs.get('lane_source', np.full(len(feats), ''))
+                major = np.isin(feats.attrs.get('class', []), ['motorway', 'trunk'])
+                log.info('mapdata: OSM lanes %s: %d way, %d geometry, %d connected; %d/%d highway segments unresolved%s',
+                         key, np.sum(source == 'osm-way'), np.sum(source == 'osm-geometry'),
+                         np.sum(source == 'connected'), np.sum(major & ~np.isfinite(counts)), np.sum(major),
+                         '' if osm_ok else ' (OSM enrichment incomplete; will retry)')
             ox, oy = mapcells.owner(feats.attrs.get("cx", np.zeros(0)), feats.attrs.get("cy", np.zeros(0)), key.z)
             feats.own = (ox == key.x) & (oy == key.y)
             if feats.clipped is not None:
@@ -337,6 +353,8 @@ class MapData:
                 # lies (the pieces of all cells make the whole polygon), not only in the bbox-centre cell
                 feats.own |= feats.clipped
             arrays = _layer_arrays(feats)
+            if not osm_ok:
+                arrays['_osm_retry_at'] = np.array(time.time() + OSM_RETRY_S)
             prov = overture.sources_provenance(THEME_OF[layer], self.release, sources) if len(feats) else None
         elif layer == "landcover":
             r = self.rasters.worldcover(key, kind)
@@ -356,11 +374,10 @@ class MapData:
             return self._osm_ex
 
     def _osm_cell(self, key, kind):
-        """(tags, raceways) of the cell's OpenStreetMap highways (osmtags.py); none when the source fails (the roads
-        keep their width guesses)."""
+        """(tags, raceways), or None on failure so the temporary fallback can expire and retry."""
         import osmtags
         if self.fetcher is None:
-            return {}, []
+            return None
         try:
             with self._lock:
                 if getattr(self, "osmtags", None) is None:
@@ -373,10 +390,10 @@ class MapData:
             if kind not in ("demand", "urgent"):
                 raise
             log.warning("mapdata: OSM road tags of %s: the host is busy (%s); the roads go on without them", key, kind)
-            return {}, []
+            return None
         except Exception as e:          # optional: the roads go on with their guesses
             log.warning("mapdata: OSM road tags of %s: %s: %s", key, type(e).__name__, e)
-            return {}, []
+            return None
 
     @staticmethod
     def _osm(feats, got):
@@ -443,6 +460,8 @@ class MapData:
                 big = os.path.getsize(f) > MIRROR_SMALL
                 a = np.load(f, mmap_mode="r" if big else None, allow_pickle=False)
                 out[n] = np.asarray(a)          # (a plain view of the mapping: np.memmap's Python hooks ran on every slice)
+            if float(out.get('_osm_retry_at', float('inf'))) <= time.time():
+                return None
             os.utime(os.path.join(d, "ok"))         # (read: the last to go)
             return out
         except (OSError, ValueError, EOFError):
@@ -521,7 +540,7 @@ class MapData:
         with self._mem_lock:
             for layer in layers:
                 got = self._mem.get((str(key), layer))
-                if got is not None:
+                if got is not None and self._mem_retry.get((str(key), layer), float('inf')) > time.time():
                     self._mem.move_to_end((str(key), layer))
                     mem[layer] = got
         futs = [(layer, self.pool.submit(timed, layer)) for layer in layers if layer not in mem]
@@ -554,7 +573,8 @@ class MapData:
                     cd.layers[layer] = None
                 else:
                     cd.layers[layer] = _raster_from(arrays)
-                self._remember((str(key), layer), (cd.layers[layer], prov, _nbytes(arrays)))
+                self._remember((str(key), layer), (cd.layers[layer], prov, _nbytes(arrays)),
+                               float(arrays.get('_osm_retry_at', float('inf'))))
             if prov:
                 pid = prov["id"]
                 if pid in provs:            # roads + connectors: one transportation record
@@ -570,16 +590,18 @@ class MapData:
         cd.provenance = [provs[k] for k in sorted(provs)]
         return cd
 
-    def _remember(self, k, entry):
+    def _remember(self, k, entry, retry_at=float('inf')):
         """Keep a decoded layer for the next cell() of it (at most MEM_MB in all, least recently used out)."""
         with self._mem_lock:
             old = self._mem.pop(k, None)
             if old is not None:
                 self._mem_bytes -= old[2]
             self._mem[k] = entry
+            self._mem_retry[k] = retry_at
             self._mem_bytes += entry[2]
             while self._mem_bytes > MEM_MB * 1e6 and len(self._mem) > 1:
-                _, (_, _, n) = self._mem.popitem(last=False)
+                key, (_, _, n) = self._mem.popitem(last=False)
+                self._mem_retry.pop(key, None)
                 self._mem_bytes -= n
 
     def cell_at(self, lat, lon, layers=LAYERS, kind="demand"):

@@ -263,7 +263,7 @@ WORKERS = 10                     # far-tile workers (--workers)
 TRACE_S = 60.0                  # BNGE_TRACEMALLOC: seconds between the memory reports ...
 TRACE_TOP = 15                  # ... and the allocation sites in each
 LANE_REQUEST, LANE_PREFETCH = 0, 1     # Server.block_pools: the blocks the mod asks for / the prefetch
-HM_BUSY_TILE_WORKERS = 3    # far tiles built at once while a physics block is building in the server process (an
+HM_BUSY_TILE_WORKERS = 5    # far tiles built at once while a physics block is building in the server process (an
                             # anchor's first, or every one with --block-process off; the block processes' blocks do
                             # not share its interpreter: far tiles one at a time behind them were most of a Steam
                             # Deck's far field time, blocks building nearly all the time while driving, 2026-10-20)

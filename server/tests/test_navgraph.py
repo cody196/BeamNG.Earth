@@ -23,6 +23,23 @@ def graph(lines, classes, connectors=(), oneway=(), speeds=(), subclass=(), cent
 
 
 class GraphTest(unittest.TestCase):
+    def test_asymmetric_shoulders_shift_lanes_and_keep_bridge_heights(self):
+        for direction in (1, -1):
+            f = features([[(0, 0), (200, 0)]], ['motorway'])
+            f.rules['oneway'] = rules([(0, direction)], 'float')
+            deck = {str(f.ids[0]): [(np.array([[0., 0.], [201., 0.]]), np.array([30., 30.]))]}
+            g = navgraph.build(FRAME, [f], flat, (0., 0.), decks=deck)
+            for x, y, z, radius in g['nodes'].values():
+                self.assertAlmostEqual(y, direction*1.5, delta=.05)
+                self.assertEqual(z, 30.)
+                self.assertEqual(radius, 4.)
+
+    def test_shared_merge_node_uses_mainline_even_when_ramp_comes_first(self):
+        g = graph([[(0, -30), (200, 0)], [(200, 0), (400, 0)]], ['motorway']*2,
+                  connectors=[(0, 'J', 1., 1.), (1, 'J', 0., 0.)],
+                  oneway=[(0, 1.), (1, 1.)], subclass=[(0, 'link')])
+        self.assertAlmostEqual(g['nodes']['cJ'][1], 1.5, delta=.05)
+
     def test_junction_shares_the_connector(self):
         g = graph([[(0, 0), (100, 0)], [(100, 0), (100, 100)]], ["residential", "residential"],
                   connectors=[(0, "A", 0.0, 0.0), (0, "J", 1.0, 1.0), (1, "J", 0.0, 0.0), (1, "B", 1.0, 1.0)])
@@ -65,7 +82,7 @@ class GraphTest(unittest.TestCase):
 
     def test_rural_motorway_two_lanes(self):
         import roads
-        for urban, n in ((False, 2), (True, 3)):
+        for urban, n in ((False, 2), (True, 2)):
             sp = roads.Spec(roads.carriageway("motorway", "paved", urban, None, True), "paved", urban, "motorway", True)
             self.assertEqual(navgraph._lanes(navgraph.driving_width(sp), True), (n, 0), urban)
         ramp = roads.Spec(roads.LINK_M[1], "paved", False, "motorway", True)

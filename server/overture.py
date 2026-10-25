@@ -78,8 +78,10 @@ THEME_LICENCES = {
 }
 
 _SRC = "sources[1].dataset AS src_dataset, sources[1].record_id AS src_record"
-_ROAD_SRC = ("coalesce(list_filter(sources, s -> s.dataset = 'OpenStreetMap' "
-             "AND regexp_matches(s.record_id, '^w[0-9]+'))[1], sources[1])")
+_ROAD_WAY = "s.dataset = 'OpenStreetMap' AND regexp_matches(s.record_id, '^w[0-9]+')"
+_ROAD_SRC = (f"coalesce(list_filter(sources, s -> {_ROAD_WAY} AND s.property = '/geometry')[1], "
+             f"list_filter(sources, s -> {_ROAD_WAY} AND coalesce(s.property, '') = '')[1], "
+             f"list_filter(sources, s -> {_ROAD_WAY})[1], sources[1])")
 _NAME = "names.\"primary\" AS name"
 _TAGS = "CAST(to_json(source_tags) AS VARCHAR) AS tags"
 LAYERS = {
