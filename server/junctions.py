@@ -21,12 +21,13 @@ import math
 import numpy as np
 
 import fast     # Rust kernels (earthfast)
+import roadmarkings
 
 RADIUS = 5.0                    # m, curb return radius when the class is not listed in RADII
 # by the larger road's class (street-view study of Fells Point, 2026-10-11: city corners are tight)
 RADII = {"residential": 3.0, "living_street": 3.0, "unclassified": 3.0, "service": 3.0,
          "tertiary": 4.5, "secondary": 6.0, "primary": 6.0, "trunk": 8.0}
-STOP_LINE = {"m": "line_white", "tl": 6.4, "p": 2, "w": 0.45}   # 1 m before the crosswalk
+STOP_LINE = {"m": "line_white", "tl": 6.4, "p": 2, "w": 0.35}   # 1 m before the crosswalk
 STOP_GAP = 1.0
 BULB_M = 6.0                    # m a curb extension runs along the street past the corner
 TAPER_M = 3.0                   # m over which it returns to the parking curb
@@ -509,11 +510,12 @@ def find(roads, has_walk, walk_w, parking_m=0.0, has_parking=lambda spec: False,
                 crosswalks.append({"a": np.r_[a, z], "b": np.r_[b, z], "w": CROSSWALK["w"]})
                 # the stop line: across the half of the road whose traffic comes into the junction
                 # (right-hand traffic heading along -u drives on u's left), 1 m before the crosswalk
-                ts = t + CROSSWALK["w"] / 2 + STOP_GAP + STOP_LINE["w"] / 2
+                stop_width = roadmarkings.profile(spec.state).solid
+                ts = t + CROSSWALK["w"] / 2 + STOP_GAP + stop_width / 2
                 if _branch_len(roads[ri][2], vi, si) > ts + 2.0:
                     cs = Pi + ui * ts
                     zs = _z_along(roads[ri][2], vi, si, ts)
-                    stops.append({"a": np.r_[cs + nl * 0.2, zs], "b": np.r_[cs + nl * (dw - 0.3), zs], "w": STOP_LINE["w"]})
+                    stops.append({"a": np.r_[cs + nl * 0.2, zs], "b": np.r_[cs + nl * (dw - 0.3), zs], "w": stop_width})
                 t0, t1 = t - CROSSWALK["w"] / 2, t + CROSSWALK["w"] / 2
                 for key, side in (((i, "L"), li), ((i, "R"), -li)):
                     tt, corner, (how, s0, tref), bulb = side_t[key]

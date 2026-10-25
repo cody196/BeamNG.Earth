@@ -2,6 +2,7 @@
 and the roads using them (roads.road_specs / carriageway, navgraph lanes)."""
 import sys
 import unittest
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -33,6 +34,39 @@ class JoinTest(unittest.TestCase):
         self.assertTrue(np.isnan(f.attrs["osm_lanes"][1]) and np.isnan(f.attrs["osm_lanes"][2]))
         self.assertEqual(str(f.attrs["osm_sidewalk"][0]), "both")
         self.assertEqual(str(f.attrs["osm_sidewalk"][2]), "")
+
+    def test_osm_source_need_not_be_first(self):
+        import duckdb
+        import overture
+        with duckdb.connect() as con:
+            source = con.execute(f"""SELECT {overture._ROAD_SRC}.record_id FROM (
+                SELECT [{{'dataset': 'Other', 'record_id': 'external'}},
+                        {{'dataset': 'OpenStreetMap', 'record_id': 'w123@2'}}] AS sources)""").fetchone()[0]
+        f = tagged([[(0, 0), (200, 0)]], ['motorway'], [source], {123: {'lanes': 5}})
+        self.assertEqual(roads.road_specs(f)[0].lanes, 5)
+
+    def test_global_parquet_query_excludes_node_and_relation_id_collisions(self):
+        import duckdb
+        import rangeread
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'highways.parquet'
+            with duckdb.connect() as con:
+                con.execute('''CREATE TABLE highways AS SELECT type, id, lanes, 'motorway' AS highway,
+                    NULL::VARCHAR AS width, NULL::VARCHAR AS maxspeed, NULL::VARCHAR AS sidewalk,
+                    NULL::VARCHAR AS lit, NULL::VARCHAR AS smoothness, NULL::VARCHAR AS surface,
+                    'yes' AS oneway, NULL::VARCHAR AS layer,
+                    {'xmin': lon, 'ymin': lat, 'xmax': lon + .001, 'ymax': lat + .001} AS bbox
+                    FROM (VALUES ('way', 1, '4', -84.5, 42.7), ('node', 1, '9', -84.5, 42.7),
+                        ('relation', 1, '8', -84.5, 42.7), ('way', 2, '3', 139.7, 35.7),
+                        ('way', 3, ' 2 ', -.1, 51.5), ('way', 4, '2;3', 12., 45.),
+                        ('way', 5, '2.5', 12., 45.)) t(type, id, lanes, lon, lat)''')
+                con.execute('COPY highways TO ? (FORMAT PARQUET)', [str(path)])
+            reader = osmtags.OsmTags(tmp, None)
+            tags, raceways = reader._cell(rangeread.MemoryRange(path.read_bytes()), (-180., -90., 180., 90.), 'demand')
+            self.assertEqual([tags[i]['lanes'] for i in (1, 2, 3)], [4, 3, 2])
+            self.assertNotIn('lanes', tags[4])
+            self.assertNotIn('lanes', tags[5])
+            self.assertEqual(raceways, [])
 
 
 class SpecTest(unittest.TestCase):

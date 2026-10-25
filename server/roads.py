@@ -168,7 +168,7 @@ ROADS_IN_GROUND = os.environ.get("BNGE_ROADS_IN_GROUND", "1") != "0"
 # m per driving lane by class when OpenStreetMap gives the lane count (osmtags.py; typical design widths)
 LANE_W = {"motorway": 3.6, "trunk": 3.5, "primary": 3.3, "secondary": 3.3, "tertiary": 3.1}
 LANE_W_DEFAULT = 3.0
-OSM_LANES = (1, 12)     # a lane count outside this is not believed
+OSM_LANES = (1, 32)     # total for both directions can exceed 12 on very wide roads
 OSM_WIDTH_M = (2.0, 40.0)
 
 
@@ -824,8 +824,9 @@ def _road_specs(feats, urban_fn, widths, left_hand):
 
 
 def _is_link(feats, i):
+    subclass = feats.attrs.get("subclass")
     return (_rule_value(feats.rules.get("subclass"), i) == "link" or
-            str(feats.attrs.get("subclass", [""] * len(feats))[i]) == "link")
+            (subclass is not None and str(subclass[i]) == "link"))
 
 
 def _marking_specs(feats, specs):
@@ -1643,7 +1644,8 @@ def extras(spec, pts, lon, left_hand=False):
                         pts, ms * (w / 2 - EDGE_LINE["inset"] - k * (solid + CENTRE["gap"])))))
             out.append(({**GUTTER, "side": ms}, GUTTER["w"], offset_polyline(pts, ms * (w / 2 - GUTTER["w"] / 2))))
     marked = cls in LANE_CLASSES or (spec.lanes is not None and cls not in {"raceway", "track", "living_street"})
-    if kind == "paved" and (cls in CENTRE_CLASSES or marked) and lanes >= 2 and w >= 6.0 and not spec.oneway:
+    if (kind == "paved" and (cls in CENTRE_CLASSES or marked) and (spec.lanes is None or lanes >= 2)
+            and w >= 6.0 and not spec.oneway):
         if centre_colour(lon) == "line_white":
             # outside the Americas one broken white line (the Gotthard road on Mapillary, 2026-10-18: ours had the
             # Americas' double line in white)
@@ -3433,7 +3435,7 @@ def twin_tunnels(parts):
     return out
 
 
-def _tunnel_chunks(tunnels, cells, exact, terrain_paint=True):
+def _tunnel_chunks(tunnels, cells, exact, terrain_paint=True, left_hand=False):
     """The chunks of the tunnels crossing the tile box `exact`: the road surface ("deck", "tunnel": the tube is
     built around it, roadmesh.tunnel) and its lines, every one "fixed" at the floor's heights; a surface chunk
     ending at its part's end carries "portal": [start is one, end is one]. Twin tunnels (twin_tunnels): their surfaces
@@ -3446,7 +3448,7 @@ def _tunnel_chunks(tunnels, cells, exact, terrain_paint=True):
                 continue
             pts = np.c_[xy, z]
             for look, w, line in [(look_of(spec), spec.width, pts)] + [
-                    (lk, w2, ln) for lk, w2, ln in extras(spec, pts, lon)
+                    (lk, w2, ln) for lk, w2, ln in extras(spec, pts, lon, left_hand)
                     if lk["m"] != SIDEWALK["m"] and lk["m"] != GUTTER["m"]]:
                 for piece in clip_polyline(line, *exact):
                     for c in split(densify(simplify(piece))):
@@ -3468,7 +3470,7 @@ def _tunnel_chunks(tunnels, cells, exact, terrain_paint=True):
         if terrain_paint and terrain_surface(spec):
             look = None                     # painted in the ground layer, as any other ground part
         lines = [] if look is None else [({**look, "deck": True, "tunnel": True, "no_tube": n in twinned}, spec.width, pts)]
-        for look, w, line in extras(spec, pts, lon):
+        for look, w, line in extras(spec, pts, lon, left_hand):
             if look["m"] != SIDEWALK["m"] and look["m"] != GUTTER["m"]:
                 lines.append((look, w, line))
         jobs.append((fid, (pts[0, :2], pts[-1, :2]), lines))
@@ -3504,14 +3506,14 @@ def _tunnel_chunks(tunnels, cells, exact, terrain_paint=True):
     return roadmarkings.paint(out)
 
 
-def _bridge_chunks(frame, bseen, elev, exact, bridges=None, cells=None):
+def _bridge_chunks(frame, bseen, elev, exact, bridges=None, cells=None, left_hand=False):
     """The chunks of the bridges crossing the tile box `exact` (deck surfaces flagged "deck", their
     centre / edge lines; every bridge chunk "fixed": its z is the deck's, not the ground's). Deck
     heights: from `bridges` (BridgeProfiles: whole chains, shared by every tile), else from the
     chains found among the given cells (deck_heights; tests)."""
     if bridges is not None:
         return _deck_chunks([(fid, spec, np.c_[xy, z], lon) for fid, spec, xy, z, lon in bridges.parts(cells, exact)
-                             if np.isfinite(z).all()], exact)
+                             if np.isfinite(z).all()], exact, left_hand)
     if not bseen:
         return []
     parts = []                                  # (fid, spec, xy (k, 2), lon)
@@ -3546,7 +3548,7 @@ def _bridge_chunks(frame, bseen, elev, exact, bridges=None, cells=None):
             import grading
             z = np.maximum(_smooth_pinned(z, DECK_STEP, grading.SIGMA_M), g)
         decks.append((fid, spec, np.c_[xy, z], lon))
-    return _deck_chunks(decks, exact)
+    return _deck_chunks(decks, exact, left_hand)
 
 
 DECK_CONTEXT_M = 24.0   # m around a tile its bridges' decks are passed as context (roadmesh.deck: whether an edge has
@@ -3574,7 +3576,7 @@ def _corner_look(point, roads):
     return LOOK["paved"]
 
 
-def _deck_chunks(decks, exact):
+def _deck_chunks(decks, exact, left_hand=False):
     """Deck + line chunks of bridge parts [(fid, spec, pts (k, 3), lon)] clipped to the box `exact`, and their decks
     within DECK_CONTEXT_M of it as "ctx" chunks (not drawn: build_tile's caller hands them to roadmesh.deck)."""
     out = []
@@ -3589,7 +3591,7 @@ def _deck_chunks(decks, exact):
                     out.append(ch)
     for fid, spec, pts, lon in decks:
         lines = [({**_deck_look(spec), "deck": True}, spec.width, pts)]
-        for look, w, line in extras(spec, pts, lon):
+        for look, w, line in extras(spec, pts, lon, left_hand):
             if look["m"] != SIDEWALK["m"] and look["m"] != GUTTER["m"]:
                 lines.append((look, w, line))
         for look, w, line in lines:
@@ -3709,7 +3711,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                     if len(c) >= 2:
                         chunks.append(_chunk(look, lw, c))
     decks_near = []                             # (retaining_walls: none under a bridge)
-    for ch in _bridge_chunks(frame, bseen, elev, (x0, y0, x1, y1), bridges, cells):
+    for ch in _bridge_chunks(frame, bseen, elev, (x0, y0, x1, y1), bridges, cells, left_hand):
         if ch.get("deck"):
             decks_near.append(ch)
         if not ch.get("ctx"):
@@ -3717,7 +3719,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         elif deck_context is not None:          # the decks around the tile (roadmesh.deck's parapet test)
             deck_context.append(ch)
     if tunnels is not None:                     # TunnelProfiles: road surfaces and lines through tunnels
-        tch = _tunnel_chunks(tunnels, cells, (x0, y0, x1, y1), terrain_paint)
+        tch = _tunnel_chunks(tunnels, cells, (x0, y0, x1, y1), terrain_paint, left_hand)
         chunks.extend(tch)
         import roadmesh
         # (retaining walls: none in a tube either, its vault over them; between twin tunnels' carriageways one stood in

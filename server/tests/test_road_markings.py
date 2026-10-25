@@ -1,0 +1,140 @@
+"""Mapped lane totals and measured paint geometry, including clipped/fixed roads."""
+import sys
+import unittest
+from pathlib import Path
+
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import navgraph
+import roadmarkings
+import roadmesh
+import roads
+import signstates
+from test_roads import features, rules
+from test_osmtags import tagged
+
+
+LINE = np.array([[0., 0., 10.], [160., 0., 10.]])
+
+
+class LaneGeometryTest(unittest.TestCase):
+    def test_mapped_counts_on_every_road_level(self):
+        for cls in ('motorway', 'trunk', 'secondary', 'residential'):
+            for count in (1, 2, 3, 4, 5, 14):
+                for level in ('ground', 'bridge', 'tunnel'):
+                    with self.subTest(cls=cls, count=count, level=level):
+                        f = tagged([[(0, 0), (160, 0)]], [cls], ['w1@1'], {1: {'lanes': count}})
+                        f.rules['oneway'] = rules([(0, -1)], 'float')
+                        if level != 'ground':
+                            f.rules['flags'] = rules([(0, 'is_' + level)])
+                        sp = {'ground': roads.road_specs, 'bridge': roads.bridge_specs,
+                              'tunnel': roads.tunnel_specs}[level](f)[0]
+                        self.assertEqual((sp.lanes, sp.dir), (count, -1))
+                        self.assertGreaterEqual(navgraph.driving_width(sp), count * roads.LANE_W.get(cls, 3.0) - .001)
+                        dividers = [lk for lk, _, _ in roads.extras(sp, LINE, -76.) if 'dash' in lk]
+                        self.assertEqual(len(dividers), count - 1)
+
+    def test_odd_two_way_counts_are_not_rounded_down(self):
+        for count in (3, 5, 7):
+            f = tagged([[(0, 0), (160, 0)]], ['secondary'], ['w1@1'], {1: {'lanes': count}})
+            sp = roads.road_specs(f)[0]
+            ex = roads.extras(sp, LINE, -76.)
+            self.assertEqual(sum('dash' in lk for lk, _, _ in ex), count - 2)
+            centers = [ln[0, 1] for lk, _, ln in ex if lk['m'] == 'line_yellow']
+            self.assertEqual(len(centers), 2)
+            self.assertAlmostEqual(np.mean(centers), 3.3 / 2)
+            self.assertEqual(sum(navgraph._lanes(navgraph.driving_width(sp), False, sp.lanes)), count)
+
+    def test_link_attribute_and_osm_deck_width(self):
+        f = tagged([[(0, 0), (160, 0)]], ['motorway'], ['w1@1'], {1: {'lanes': 2, 'width': 10.5}})
+        f.attrs['subclass'] = np.array(['link'])
+        f.rules['oneway'] = rules([(0, 1)], 'float')
+        f.rules['flags'] = rules([(0, 'is_bridge')])
+        sp = roads.bridge_specs(f)[0]
+        self.assertTrue(sp.link)
+        self.assertEqual(sp.width, 10.5)
+        look = next(lk for lk, _, _ in roads.extras(sp, LINE, -76.) if 'dash' in lk)
+        self.assertEqual(look['dash'], (1.2, 2.8))
+
+
+class PaintTest(unittest.TestCase):
+    def spec(self, state='', link=False, direction=1):
+        return roads.Spec(11.6, 'paved', False, 'motorway', True, dir=direction,
+                          lanes=2, state=state, link=link)
+
+    def test_state_boundaries_and_fallback(self):
+        self.assertEqual(list(signstates.states([42.73, 44.98, 43.07, 38.58, 51.5, 35.68],
+                                                [-84.55, -93.27, -89.4, -121.49, -.12, 139.69])),
+                         ['MI', 'MN', 'WI', 'CA', '', ''])
+        f = features([[(0, 0), (100, 0)]], ['motorway'])
+        f.lonlat[:] = [[-84.55, 42.73], [-84.549, 42.73]]
+        self.assertEqual(roads.road_specs(f)[0].state, 'MI')
+
+    def test_dimensions_measured_from_output(self):
+        expected = [('', False, 3., 8., .35), ('', True, 1.2, 2.8, .35),
+                    ('MI', False, 4.5, 11.5, .4), ('MI', True, 1.5, 6., .35),
+                    ('MN', False, 3.1, 12.25, .3),
+                    ('WI', False, 5.15, 10.25, .31), ('WI', True, 1.25, 2.9, .3),
+                    ('CA', False, 4.6, 10.5, .35), ('CA', True, 2.3, 4.9, .25)]
+        for state, link, length, gap, width in expected:
+            with self.subTest(state=state, link=link):
+                look, w, line = next(row for row in roads.extras(self.spec(state, link), LINE, -90.)
+                                     if 'dash' in row[0])
+                chunks = roadmarkings.paint([roads._chunk(look, w, line)])
+                self.assertAlmostEqual(chunks[0]['n'][-1][0] - chunks[0]['n'][0][0], length)
+                self.assertAlmostEqual(chunks[1]['n'][0][0] - chunks[0]['n'][-1][0], gap)
+                self.assertEqual(chunks[0]['w'], width)
+                ribbon = roadmesh.ribbons(chunks[:1])[0]
+                np.testing.assert_allclose(np.linalg.norm(ribbon[0] - ribbon[1], axis=1), width)
+
+    def test_solid_widths_and_driver_left_color(self):
+        for state, width in [('', .35), ('MI', .4), ('MN', .45), ('WI', .32), ('CA', .25)]:
+            for direction in (1, -1):
+                for lon in (-90., 12., 139.):
+                    edges = [row for row in roads.extras(self.spec(state, direction=direction), LINE, lon)
+                             if row[0]['p'] == roads.EDGE_LINE['p']]
+                    self.assertEqual(len(edges), 2)
+                    for look, w, p in edges:
+                        self.assertEqual(w, width)
+                        self.assertEqual(look['m'], 'line_yellow' if p[0, 1] * direction > 0 else 'line_white')
+
+    def test_minnesota_ramps_have_no_dashes(self):
+        ex = roads.extras(self.spec('MN', True), LINE, -93.)
+        self.assertFalse(any('dash' in lk for lk, _, _ in ex))
+        self.assertEqual(len(ex), 2)
+
+    def test_phase_survives_tile_cuts_and_fixed_heights(self):
+        look, w, source = next(row for row in roads.extras(self.spec(), LINE, -90.) if 'dash' in row[0])
+        chunks = []
+        for a, b in [(0., 12.), (12., 24.), (24., 40.)]:
+            piece = np.array([[a, 0., 10.], [b, 0., 10.]])
+            chunk = roads._chunk(look, w, piece)
+            chunk['fixed'] = True
+            chunks.extend(roadmarkings.paint([chunk]))
+        spans = [(c['n'][0][0], c['n'][-1][0]) for c in chunks]
+        np.testing.assert_allclose(spans, [(0., 3.), (11., 12.), (12., 14.), (22., 24.), (24., 25.), (33., 36.)])
+        self.assertTrue(all(c['fixed'] and all(p[2] == 10. for p in c['n']) for c in chunks))
+        self.assertEqual(roadmarkings.paint(chunks), chunks)
+
+    def test_bridge_output_contains_short_ramp_dashes(self):
+        chunks = roads._deck_chunks([('bridge', self.spec(link=True), LINE, -90.)], (0., -20., 40., 20.))
+        dashes = [c for c in chunks if c['m'] == 'line_white' and c['p'] == 6]
+        self.assertEqual(len(dashes), 10)
+        self.assertTrue(all(c['fixed'] for c in dashes))
+        self.assertAlmostEqual(dashes[0]['n'][-1][0] - dashes[0]['n'][0][0], 1.2)
+
+    def test_two_way_bridge_and_tunnel_follow_left_hand_lane_split(self):
+        from types import SimpleNamespace
+        sp = roads.Spec(11.9, 'paved', False, 'secondary', lanes=3)
+        tunnels = SimpleNamespace(parts=lambda cells, box: [('t', sp, LINE[:, :2], LINE[:, 2], -90.)])
+        box = (0., -20., 40., 20.)
+        for chunks in (roads._deck_chunks([('b', sp, LINE, -90.)], box, left_hand=True),
+                       roads._tunnel_chunks(tunnels, [], box, left_hand=True)):
+            centers = [c['n'][0][1] for c in chunks if c['m'] == 'line_yellow']
+            self.assertEqual(len(centers), 2)
+            self.assertAlmostEqual(np.mean(centers), -1.65, places=3)
+
+
+if __name__ == '__main__':
+    unittest.main()

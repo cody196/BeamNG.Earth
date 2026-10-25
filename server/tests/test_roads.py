@@ -285,19 +285,19 @@ class BuildTileTest(unittest.TestCase):
 
         def lanes(cls, urban):
             sp = roads.Spec(roads.carriageway(cls, "paved", urban, None, True), "paved", urban, cls, True, 2.5, 1)
-            n = sum(1 for look, w, line in roads.extras(sp, pts, -100.0) if look is roads.LANE_LINE)
+            n = sum(1 for look, w, line in roads.extras(sp, pts, -100.0) if "dash" in look)
             return n + 1, sp
         n, rural = lanes("motorway", False)
         self.assertEqual(n, 2, "rural motorway carriageway")
         self.assertAlmostEqual(rural.width, roads.MOTORWAY_RURAL_M + 2 * roads.SHOULDER_M)
-        edges = [line[0][1] for look, w, line in roads.extras(rural, pts, -100.0) if look is roads.EDGE_LINE]
+        edges = [line[0][1] for look, w, line in roads.extras(rural, pts, -100.0) if look["p"] == roads.EDGE_LINE["p"]]
         self.assertEqual(sorted(round(abs(y), 2) for y in edges), [round(roads.MOTORWAY_RURAL_M / 2, 2)] * 2,
                          "edge lines between the lanes and the shoulders")
         self.assertEqual(lanes("motorway", True)[0], 3, "urban motorway carriageway")
         self.assertEqual(lanes("trunk", False)[0], 2, "rural divided trunk")
         # a ramp (one lane, LINK_M): its edge lines a lane apart, not inside the motorway's shoulders (GitHub #107)
         ramp = roads.Spec(roads.LINK_M[1], "paved", False, "motorway", True, 2.5, 1)
-        edges = [line[0][1] for look, w, line in roads.extras(ramp, pts, -100.0) if look is roads.EDGE_LINE]
+        edges = [line[0][1] for look, w, line in roads.extras(ramp, pts, -100.0) if look["p"] == roads.EDGE_LINE["p"]]
         self.assertAlmostEqual(abs(edges[0] - edges[1]), roads.LINK_LANE_M, places=2)
 
     def test_divided_trunk_sidewalk_outer_side_only_when_slow(self):
@@ -351,8 +351,9 @@ class BuildTileTest(unittest.TestCase):
                 self.assertGreater(abs(y - 100), sec_w / 2 + sw - 0.6, (x, y))
         yc = next(c["n"][0][1] for c in by[roads.LOOK["paved"]["m"]] if abs(c["n"][0][1] - 100) < 1)
         ys = sorted({round(c["n"][0][1], 3) for c in by["line_yellow"]})
-        self.assertTrue(any(abs(y - (yc + roads.CENTRE["gap"])) < 0.01 for y in ys) and
-                        any(abs(y - (yc - roads.CENTRE["gap"])) < 0.01 for y in ys), (yc, ys))
+        offset = (roads.CENTRE["w"] + roads.CENTRE["gap"]) / 2
+        self.assertTrue(any(abs(y - (yc + offset)) < 0.01 for y in ys) and
+                        any(abs(y - (yc - offset)) < 0.01 for y in ys), (yc, ys))
 
     def test_sidewalk_mesh_runs_and_drains(self):
         import tempfile
@@ -677,8 +678,7 @@ class BuildTileTest(unittest.TestCase):
         sp = roads.Spec(7.0, "paved", False, "primary", False)
         line = np.array([[0.0, 0, 5], [100, 0, 5]])
         us = [lk for lk, w, ln in roads.extras(sp, line, -76.6) if lk["m"] == "line_yellow"]
-        eu = [lk for lk, w, ln in roads.extras(sp, line, 8.6) if lk["m"] in ("line_white", roads.LANE_LINE["m"])
-              and lk is not roads.EDGE_LINE]
+        eu = [lk for lk, w, ln in roads.extras(sp, line, 8.6) if "dash" in lk]
         self.assertEqual(len(us), 2)
         self.assertEqual([lk["m"] for lk in eu], [roads.LANE_LINE["m"]])
 

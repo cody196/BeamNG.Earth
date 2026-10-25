@@ -3,13 +3,13 @@ roads, joined to Overture's road segments by their OpenStreetMap way id (the use
 have more info about the roads, lane count, road types").
 
 Overture's transportation theme has no lane count (removed in 2024, not back in schema v2.0.0) and few widths, but
-98.6 % of its segments come from OpenStreetMap and keep the way id (sources[1].record_id "w<id>@<version>"). OSM US's
+98.6 % of its segments come from OpenStreetMap and keep the way id (sources[].record_id "w<id>@<version>"). OSM US's
 Layercake publishes every OSM highway as one GeoParquet file (https://layercake.openstreetmap.us/layers/highways/,
 ODbL, ~29 GB, 2,467 row groups, spatially clustered, rebuilt about weekly), with the tags as columns and a bbox struct.
 Like overture.py, only what a cell needs is read, through rangeread (netfetch's limits, the block cache), with DuckDB
 reading the blocks: the footer once (9 MB), the bbox columns of the row groups whose statistics touch the cell, then
 the tag columns of the row groups that hold a matching way (no geometry). The tag values are parsed in the query
-(lanes "2;3" -> 2, width "7 m" / "23'" -> metres, maxspeed "30 mph" -> km/h).
+(unambiguous integer lanes only, width "7 m" / "23'" -> metres, maxspeed "30 mph" -> km/h).
 
 The file is rewritten in place: a version is pinned by its ETag (the cache directory; every range request carries
 If-Match, rangeread.Changed when it moved on), and the next version is taken on the next start (version()).
