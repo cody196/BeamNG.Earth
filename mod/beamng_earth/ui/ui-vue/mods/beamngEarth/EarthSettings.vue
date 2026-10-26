@@ -226,10 +226,10 @@ let lastWriteAt = 0 // a poll answered just after a uiSet may carry the value fr
 // Mirrors lua/ge/extensions/beamngEarth/settings.lua SCHEMA (the Lua side validates and clamps).
 const settingsSchema = [
   {
-    name: "Driving progress",
+    name: "Driving progress (singleplayer)",
     items: [
-      { id: "autoResume", type: "bool", default: true, name: "Save and restore driving position", desc: "Automatically save your vehicle position and heading. The default Where you left off spawn restores the latest checkpoint. Choosing a saved place or random spawn takes precedence." },
-      { id: "positionSaveInterval", type: "float", min: 1, max: 300, step: 1, default: 10, name: "Position autosave interval (seconds)", desc: "How often your position is saved while driving, so you can resume after a crash. Your position is also saved when leaving the level normally." },
+      { id: "autoResume", type: "bool", default: true, name: "Save and restore driving position", note: "Singleplayer freeroam only. BeamMP saves are managed separately by the server.", desc: "Save your singleplayer freeroam position and heading. Where you left off restores the latest checkpoint; saved-place and random spawns take precedence. This setting does not affect BeamMP, missions, scenarios, or career." },
+      { id: "positionSaveInterval", type: "float", min: 1, max: 300, step: 1, default: 10, name: "Position autosave interval (seconds)", desc: "How often your singleplayer freeroam position is saved. A final save is made when leaving freeroam normally. BeamMP uses the server's own interval." },
     ],
   },
   {

@@ -49,8 +49,9 @@ data and little CPU: the world is built on each player's computer.
   version as the server's. Start the BeamNG.Earth app and the BeamMP launcher in either order (the app starts the game,
   or just its world server if the game is already running), then join. Without the app, a window asks to install it:
   the world can't load without it.
-- A player who joins is sent to where the others are, and each player's car shows in the right place in everyone's
-  world, with its dents. Other players show on the world map (M) as arrows.
+- Returning players resume their last saved position and heading on this server. First-time players are sent near
+  the others. Each player's car shows in the right place in everyone's world, with its dents. Other players show
+  on the world map (M) as arrows.
 - (Turned off for now: each player builds their own world, and the setting below does nothing yet.) Players near
   each other share one world origin and split the work of building the world: each piece of the distant
   landscape is built once and sent to the others. For that, the other players must reach each player's computer on
@@ -59,3 +60,25 @@ data and little CPU: the world is built on each player's computer.
   `Resources/Server/BeamNGEarth/main.lua` and restart the server: every player who joins gets it. A player can still
   pick their own with the environment variable `BNGE_SHARE_PORT`.
 - Players far apart (another country) each build their own world and don't see each other's cars until they meet.
+
+## Saved player positions
+
+The server records stable driving positions from the clients' two-second updates, writes them every **10 seconds**,
+and flushes the latest received positions on disconnect and server shutdown. It restores position, road/deck height,
+and heading when a player reconnects, including after a server restart. Joining without a car keeps the world loading;
+the first owned vehicle is placed at the checkpoint. Temporary loading positions, free cameras, and other players'
+vehicles do not replace a driving checkpoint.
+
+Saves use the authenticated account's permanent `beammp` identifier, independent of display names or temporary
+player IDs ([BeamMP API](https://docs.beammp.com/scripting/server/latest-server-reference/#mpgetplayeridentifiersplayer_id-number-table)).
+Guest sessions are not persisted. Each server keeps its own saves, separate from singleplayer Driving Progress.
+
+Edit `G.SAVE_POSITIONS` and `G.SAVE_SECONDS` near the top of `Resources/Server/BeamNGEarth/main.lua`, then restart,
+to enable/disable this feature or change its save interval. The two files `bnge_player_positions1.json` and
+`bnge_player_positions2.json` live beside `ServerConfig.toml`; keep both when migrating the server. Alternating files
+preserve the previous complete save if a write is interrupted. They are outside `Resources/Server` to avoid plugin
+reloads when saving.
+
+Update **both** the server plugin and `Resources/Client/beamng_earth.zip`, then restart the server and have players
+reconnect. Older clients keep the original join-near-others behavior. The singleplayer autosave toggle and interval
+do not control BeamMP saves.

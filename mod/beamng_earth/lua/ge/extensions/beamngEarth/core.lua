@@ -219,12 +219,13 @@ local teleportTo -- defined with M.teleport (the level start's own teleport is o
 -- road from the server), else to the window's lat/lon (the default start until it is changed)
 local RANDOM_WAIT_S = 15 -- s for the server's random place (an older server never answers: the default start)
 local function defaultStart()
-  local saved = settings.get('autoResume') and resume.load() or nil
+  local saved = not st.multiplayer and resume.singleplayerFreeroam() and settings.get('autoResume') and resume.load() or nil
   if saved then return teleportTo(saved.lat, saved.lon, nil, 'start', saved) end
   local lat, lon = ui.getLatLon(DEFAULT_LAT, DEFAULT_LON)
   return teleportTo(lat, lon, nil, 'start')
 end
 local function startTeleport()
+  if st.multiplayer or beammp.inSession() then return defaultStart() end
   local choice = levelinfo.chosen()
   local id = levelinfo.placeId(choice)
   local p = id and places.find(id)
@@ -394,6 +395,15 @@ local function tickMotionBlur()
   blurHold.saved = nil
 end
 
+local function resumeVehicle()
+  local veh = getPlayerVehicle(0)
+  if veh and (st.multiplayer or beammp.inSession()) then
+    local mp = rawget(_G, 'MPVehicleGE')
+    if not mp or not mp.isOwn or not mp.isOwn(veh:getID()) then return nil end
+  end
+  return veh
+end
+
 local function commitTeleport(msg, saved)
   local tr, err = anchorTerrain(msg)
   gov:heavyNow() -- the user asked for a jump: no waiting for a calm frame
@@ -418,6 +428,8 @@ local function commitTeleport(msg, saved)
   st.floorUntil = msg.floorZ and (st.clock + FLOOR_WAIT_S) or nil
   st.placeHeading = saved and saved.heading or nil
   st.resumeFloor = saved ~= nil
+  st.mpResumeToken = saved and saved.token or nil
+  st.awaitResumeVehicle = saved and saved.token and not resumeVehicle() and saved or nil
   if saved then
     local _, _, z = geodesy.newAnchor(msg.lat, msg.lon):geodeticToEnu(saved.lat, saved.lon, saved.height)
     st.floorZ, st.floorUntil = z, st.clock + FLOOR_WAIT_S
@@ -426,6 +438,7 @@ local function commitTeleport(msg, saved)
   -- Lift it above the new origin in this same frame (velocity zeroed as in spawn.lua:532-534)
   -- so physics never sees that; placePlayer() then sets it down properly.
   local veh = getPlayerVehicle(0)
+  if st.mpResumeToken then veh = resumeVehicle() end
   holdMotionBlur()
   if veh then
     veh:setClusterPosRelRot(-1, st.placeX, st.placeY, st.placeZ + PRE_LIFT, 0, 0, 0, 1)
@@ -592,6 +605,7 @@ end
 -- The heading-preserving quat follows main.lua:1306.
 local function placePlayer(z, exactFloor)
   local veh = getPlayerVehicle(0)
+  if st.mpResumeToken then veh = resumeVehicle() end
   if not veh then return false end
   local dir = veh:getDirectionVector()
   dir = vec3(dir.x, dir.y, 0)
@@ -615,6 +629,7 @@ end
 -- Wait for the tunnel/bridge collision before restoring its height. Resume checkpoints use
 -- the saved vehicle altitude to pick the correct road deck at stacked roads.
 function M.floorCheck()
+  if st.awaitResumeVehicle then return end
   if st.clock > (st.floorUntil or 0) then
     st.floorZ, st.floorUntil = nil, nil
     st.placeHeading, st.resumeFloor = nil, nil
@@ -1103,12 +1118,21 @@ local function anchorKnown()
 end
 
 local function updateWorld(dt)
+  -- BeamMP joins in free camera. Keep streaming while no owned car exists,
+  -- then place the first owned vehicle at the server checkpoint, with its heading.
+  if st.awaitResumeVehicle and resumeVehicle() and st.anchor and not st.pending then
+    local saved = st.awaitResumeVehicle
+    st.awaitResumeVehicle = nil
+    st.placeX, st.placeY, st.floorZ = st.anchor:geodeticToEnu(saved.lat, saved.lon, saved.height)
+    st.placeZ, st.placeHeading = st.floorZ + 1, saved.heading
+    st.floorUntil, st.placeFrames = st.clock + FLOOR_WAIT_S, PLACE_DELAY_FRAMES
+  end
   if st.floorZ and not st.placeFrames then M.floorCheck() end
   if st.placeFrames then
     st.placeFrames = st.placeFrames - 1
     if st.placeFrames <= 0 then
       -- Ordinary camera-only sessions can stream without a car; a resume waits for its vehicle.
-      if placePlayer(st.placeZ) or st.placeHeading == nil then st.placeFrames = nil end
+      if st.awaitResumeVehicle or placePlayer(st.placeZ) or st.placeHeading == nil then st.placeFrames = nil end
     end
     return -- no rebase decisions while the player is being placed
   end
@@ -1636,6 +1660,9 @@ local function engineTickMs()
 end
 
 local function onUpdate(dtReal, dtSim)
+  -- Latch this for the entire level, including disconnect/unload callbacks
+  -- after BeamMP has already cleared isMPSession().
+  if beammp.inSession() then st.multiplayer = true end
   dtReal = dtReal or 0
   local frameMs0 = frameTimer and frameTimer:stopAndReset() or dtReal * 1000
   if not st.inOurLevel and not st.active then
@@ -1834,6 +1861,7 @@ local function onLevelStart()
   -- the connection outlives levels: keep its session and the request id sequence
   local sessionId, nextRequestId, mapPort = st.sessionId, st.nextRequestId, st.mapPort
   resetState()
+  st.multiplayer = beammp.inSession()
   st.sessionId, st.nextRequestId, st.mapPort = sessionId, nextRequestId, mapPort   -- the connection's (hello)
   farfield.forget()
   terrain.onLevelChanged()
@@ -1879,10 +1907,14 @@ end
 
 -- BeamMP finished joining a server (its own hook): the combined app layout (beammp.lua); the first pose asks where
 -- the others are (mpsession.lua).
-function M.onBeamMPPostJoin() beammp.onPostJoin(); mpsession.onPostJoin() end
+function M.onBeamMPPostJoin() st.multiplayer = true; beammp.onPostJoin(); mpsession.onPostJoin() end
 
 -- BeamMP left the server (its own hook): the other players' cars we deactivated back on.
-function M.onBeamMPServerLeave() pcall(beammp.onServerLeave); pcall(mpsession.reset) end
+function M.onBeamMPServerLeave()
+  st.multiplayer = true
+  pcall(beammp.onServerLeave)
+  pcall(mpsession.reset)
+end
 
 -- The UI apps (ui/modules/apps/BeamNGEarth*) say when they are on screen: hudapps.lua.
 function M.hudApp(name, on) return hudapps.setMounted(name, on) end
@@ -1896,7 +1928,7 @@ local function onClientPreStartMission(levelPath)
 end
 
 local function onClientEndMission()
-  M.saveDrivingPosition(0, true)
+  if not st.progressSavedOnExit then M.saveDrivingPosition(0, true) end
   hudapps.unhookCityZone()
   hudapps.unhookMinimapNorth()
   postfx.restore()
@@ -2032,15 +2064,34 @@ end
 function M.toggleUI() ui.visible = not ui.visible end
 
 -- Save the vehicle, never the free camera or a temporary teleport/rebase pose.
-function M.saveDrivingPosition(dt, force)
-  local pose
-  if settings.get('autoResume') and st.inOurLevel and st.active and st.anchor
+function M.drivingPose()
+  if st.inOurLevel and st.active and st.anchor
     and not (st.pending and st.pending.purpose == 'teleport') and not st.rebasing and not st.placeFrames and not st.floorZ
-    and not dropHold.active and st.clock >= st.loadingUntil then
-    local veh = getPlayerVehicle(0)
-    if veh then pose = resume.capture(st.anchor, veh:getPosition(), veh:getDirectionVector()) end
+    and not st.awaitResumeVehicle and not dropHold.active and st.clock >= st.loadingUntil then
+    local veh = resumeVehicle()
+    if veh then return resume.capture(st.anchor, veh:getPosition(), veh:getDirectionVector()) end
   end
+end
+
+function M.saveDrivingPosition(dt, force)
+  local pose = not st.multiplayer and resume.singleplayerFreeroam() and settings.get('autoResume') and M.drivingPose() or nil
   return resume.tick(dt, settings.get('positionSaveInterval'), pose, force)
+end
+
+-- Server-owned BeamMP progress never reads/writes the singleplayer checkpoint.
+function M.restoreMultiplayer(saved)
+  if not beammp.inSession() or type(saved) ~= 'table' then return false end
+  local p = {version=1, sequence=1, lat=saved.lat, lon=saved.lon, height=saved.height, heading=saved.heading,
+    token=saved.token}
+  if not resume.valid(p) or type(p.token) ~= 'string' or #p.token > 80 then return false end
+  st.multiplayer = true
+  return teleportTo(p.lat, p.lon, nil, 'tool', p)
+end
+
+function M.multiplayerRestoreStatus(token)
+  if st.pending and st.pending.resume and st.pending.resume.token == token then return 'loading' end
+  if st.mpResumeToken == token then return M.drivingPose() and 'ready' or 'loading' end
+  return 'retry'
 end
 
 -- The session's terrain block size (docs/V1_4_SPEC.md 3.5, M4): 1024 (v1.3.1) or 512, from the
@@ -2229,6 +2280,10 @@ M.onPreRender = onPreRender
 M.onUiChangedState = onUiChangedState
 M.onClientStartMission = onClientStartMission
 M.onClientPreStartMission = onClientPreStartMission
+M.onClientPreEndMission = function()
+  -- Before freeroam's end hook clears freeroamActive (extension order can vary).
+  st.progressSavedOnExit = M.saveDrivingPosition(0, true)
+end
 M.onNavgraphReloaded = function() navgraph.onReloaded() end
 M.onVehicleMapmgrUpdate = function(id) gps.onVehicleMapmgrUpdate(id) end
 M.onClientEndMission = onClientEndMission

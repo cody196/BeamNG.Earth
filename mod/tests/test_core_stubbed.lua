@@ -823,6 +823,7 @@ T.check(scenetree.findObject('bngEarthTerrain') == nil, 'terrain deleted on unlo
 T.check(#S.liveOf('Material') == 0 and #S.liveOf('TSStatic') == 0, 'far tiles and their materials deleted on unload')
 
 do -- Driving progress: real lifecycle, network reply, road readiness, placement and periodic saves.
+  core_gamestate = {state={state='freeroam'}}
   core.onClientEndMission()
   local resume = require('beamngEarth/resume')
   local settings = require('beamngEarth/settings')
@@ -876,7 +877,10 @@ do -- Driving progress: real lifecycle, network reply, road readiness, placement
   T.near(saved.heading,270,0.001,'current vehicle heading saved')
   local count=saves
   veh.pos=vec3(30,40,121)
+  core.onClientPreEndMission()
+  freeroam_freeroam={state={freeroamActive=false}} -- freeroam's end hook can run before ours
   core.onClientEndMission()
+  freeroam_freeroam=nil
   T.check(saves==count+1,'level exit forces a final checkpoint')
   saved=resume.load()
   expectedLat,expectedLon=geodesy.newAnchor(request.lat,request.lon):enuToGeodetic(30,40,121)
@@ -913,6 +917,55 @@ do -- Driving progress: real lifecycle, network reply, road readiness, placement
   T.check(not core.saveDrivingPosition(100,true),'disabled autosave does not write')
   core.onClientEndMission()
   settings.set('autoResume',true)
+  local reads=0
+  jsonReadFile=function(path)
+    if path==resume.FILES[1] or path==resume.FILES[2] then reads=reads+1 end
+    return files[path]
+  end
+  local mp, own=true,false
+  MPCoreNetwork={isMPSession=function() return mp end}
+  MPVehicleGE={isOwn=function() return own end,getVehicles=function() return {} end}
+  local savedWrites=saves
+  core.onClientStartMission()
+  frames(3)
+  T.check(reads==0 and not core.saveDrivingPosition(100,true),'BeamMP neither reads nor writes singleplayer checkpoint')
+  -- Server restores are independent of the local singleplayer setting.
+  settings.set('autoResume',false)
+  getPlayerVehicle=function() return nil end
+  T.check(core.restoreMultiplayer({lat=44,lon=-90,height=121,heading=215,token='mp-save'}),'server restore accepted with singleplayer autosave off')
+  frames(3)
+  request=last('prepare_anchor')
+  T.near(request.lat,44,1e-8,'server target determines multiplayer spawn')
+  T.near(request.lon,-90,1e-8,'server target has no meeting-place offset')
+  serverSend({type='anchor_ready',requestId=request.requestId,anchorId=32,lat=request.lat,lon=request.lon,
+    groundZ=120,terrain=terrainMsg(0,0,'/temp/mp-resume.png',0)})
+  local posesBefore=#received('pose')
+  frames(25)
+  T.check(#received('pose')>posesBefore,'free camera keeps world streaming while waiting for an owned vehicle')
+  T.check(core.multiplayerRestoreStatus('mp-save')=='loading','free camera cannot acknowledge a vehicle restore')
+  getPlayerVehicle=oldGet
+  frames(4)
+  T.check(core.drivingPose()==nil,'spectating another player cannot save their position')
+  own=true
+  frames(90)
+  T.check(core.multiplayerRestoreStatus('mp-save')=='ready','first owned vehicle completes the server restore')
+  T.near(placedDir.x,math.sin(math.rad(215)),1e-6,'multiplayer vehicle receives saved heading')
+  T.near(core.drivingPose().lat,44,1e-8,'multiplayer checkpoint uses restored vehicle position')
+  T.check(reads==0 and saves==savedWrites,'multiplayer restore and driving leave singleplayer files untouched')
+  mp=false
+  core.onBeamMPServerLeave()
+  settings.set('autoResume',true)
+  T.check(not core.saveDrivingPosition(100,true),'disconnect latch blocks singleplayer save after BeamMP clears its session flag')
+  core.onClientPreEndMission()
+  core.onClientEndMission()
+  T.check(saves==savedWrites,'multiplayer level-end callback cannot overwrite singleplayer save')
+  MPCoreNetwork, MPVehicleGE=nil,nil
+  core_gamestate.state.state='scenario'
+  core.onClientStartMission()
+  frames(3)
+  T.check(reads==0,'scenario startup does not restore a freeroam checkpoint')
+  core.onClientEndMission()
+  core_gamestate=nil
   roads.settledFor, castRayStatic, quatFromDir = oldSettled, oldRay, oldQuat
   jsonReadFile, jsonWriteFile = nil, nil
 end

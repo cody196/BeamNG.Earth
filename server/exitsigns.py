@@ -21,6 +21,7 @@ APPROACH_M = 1800.
 QUERY_MARGIN = 1900.
 ADVANCE_MPH = 402.336
 ADVANCE_METRIC = 500.
+DECISION_M = 35.                 # destination/arrow panel immediately before the exit entrance
 ADVANCE_MPH_STATIONS = ((1609.344, '1 MILE'), (804.672, '1/2 MILE'), (ADVANCE_MPH, '1/4 MILE'))
 GORE_SEARCH_M = 300.
 GORE_CLEAR_M = 1.
@@ -331,19 +332,21 @@ def _on_deck(point, chunks, radius):
 
 
 def _make_sign(obj, kind, centre, travel, road_point, frame, elev, side, width, height,
-               distance_text='', distance_m=0.):
+               distance_text='', distance_m=0., state=None):
     right = np.array([travel[1], -travel[0]])
-    posts = np.array([centre - right * width * .32, centre + right * width * .32])
+    if state is None:
+        la, lo, _ = frame.enu_to_geodetic(float(centre[0]), float(centre[1]), 0.)
+        import signstates
+        state = str(signstates.states(la, lo).item())
+    offsets = (-.32, 0., .32) if portrait(state) and kind != 'ramp' and sign_style(obj['exit']['label']) == 'exit' else (-.32, .32)
+    posts = np.array([centre + right * width * off for off in offsets])
     bases = np.array([_ground_z(frame, elev, p) for p in posts])
     z = _ground_z(frame, elev, centre)
     bottom = max(float(bases.max()) + 2.4, float(road_point[2]) + 2.2)
     label = obj['exit']['label']
-    la, lo, _ = frame.enu_to_geodetic(float(centre[0]), float(centre[1]), 0.)
-    import signstates
-    state = str(signstates.states(la, lo).item())
     return dict(id=obj['id'], kind=kind, label=label, style=sign_style(label), state=state,
                 centre=[float(centre[0]), float(centre[1]), z], travel=travel.tolist(), side=side,
-                bottom=bottom, width=width, height=height, bases=bases.tolist(),
+                bottom=bottom, width=width, height=height, bases=bases.tolist(), post_offsets=list(offsets),
                 distance=distance_text, advance_m=distance_m)
 
 
@@ -391,7 +394,8 @@ def place(frame, objects, roads, box, elev, chunks=(), left_hand=False, mph=True
         if full is None or ramp_end is None:
             continue
         label, side = extra['label'], int(extra['side'])
-        for distance, text in (ADVANCE_MPH_STATIONS if mph else ((ADVANCE_METRIC, '500 m'),)):
+        stations = (ADVANCE_MPH_STATIONS if mph else ((ADVANCE_METRIC, '500 m'),)) + ((DECISION_M, ''),)
+        for distance, text in stations:
             if full[2] < distance + 20.:
                 continue
             q, direction, _ = _station(approach, full[2] - distance)
@@ -401,16 +405,29 @@ def place(frame, objects, roads, box, elev, chunks=(), left_hand=False, mph=True
             _, near, travel, paved_width = candidate
             _, _, spec, line, k, t, at_xy, _ = near
             at = line[k] * (1. - t) + line[k + 1] * t
-            width, height = dimensions(label, 'advance')
+            kind = 'advance' if text else 'decision'
+            la, lo, _ = frame.enu_to_geodetic(float(at[0]), float(at[1]), 0.)
+            import signstates
+            state = str(signstates.states(la, lo).item())
+            width, height = dimensions(label, kind, state)
             right = np.array([travel[1], -travel[0]])
             cross = roadlanes.cross(line)
             # The fourth row value is its generated ribbon width. Its cross-section can
             # vary through lane-count changes, rather than being the native Spec width.
             edge = abs((cross[k]*(1.-t)+cross[k+1]*t)@right)*paved_width/2.
             centre = at[:2] + right * side * (edge + 2. + width / 2.)
+            if kind == 'decision':
+                # Never put the new panel in a nearby ramp/frontage-road pavement.
+                polygons = [_outline(r[2], r[3]) for r in pavements]
+                for _ in range(12):
+                    if _clear(centre, width/2+.5, polygons):
+                        break
+                    centre += right*side
+                else:
+                    continue
             if not (x0 <= centre[0] < x1 and y0 <= centre[1] < y1) or _on_deck(at[:2], chunks, 2.):
                 continue
-            out.append(_make_sign(obj, 'advance', centre, travel, at, frame, elev, side, width, height, text, distance))
+            out.append(_make_sign(obj, kind, centre, travel, at, frame, elev, side, width, height, text, distance, state))
 
         width, height = dimensions(label, 'ramp')
         candidate = _gore(extra, approach, ramp, pavements, ramp_mains, width)
@@ -486,17 +503,51 @@ def route_symbols(routes, state=''):
 
 
 def advance_arrow(sign):
-    return sign['kind'] == 'advance' and sign.get('distance', '').strip().upper() == '1/4 MILE'
+    return sign['kind'] == 'decision'
+
+
+def portrait(state):
+    return state in STATE_CODES and state != 'MI'
+
+
+def portrait_layout(sign):
+    """Reference-photo arrangement: stacked shields, destinations, then distance/arrow."""
+    label, w, h = sign['label'], sign['width'], sign['height']
+    routes = route_symbols(label['routes'], sign.get('state', ''))
+    names = label['names'] or ([] if routes else ['EXIT '+label['ref']])
+    top = h-.40
+    symbols, lines, directions = [], [], []
+    for route in routes:
+        sw = 1.08 if route['kind'] in ('interstate', 'us') and len(route['number']) >= 3 else .86
+        compass = route['qualifier'] in ('NORTH', 'SOUTH', 'EAST', 'WEST')
+        word = route['qualifier'].title() if compass else ''
+        dw = guide_width(word, .46) if word else 0.
+        group = sw + (.28+dw if word else 0.)
+        y = -group/2+sw/2
+        symbols.append(dict(route, qualifier='' if compass else route['qualifier'],
+                            y=y, bottom=top-.90, width=sw, height=.90))
+        if word:
+            directions.append(dict(value=word,y=-group/2+sw+.28+dw/2,
+                                   baseline=top-.65,height=.46,max_width=dw+.01))
+        top -= 1.20
+    top -= .10
+    for name in names:
+        lines.append(dict(value=name,y=0.,baseline=top-.58,height=.58,max_width=w-.65))
+        top -= .85
+    return dict(lines=lines,routes=symbols,directions=directions,arrow=advance_arrow(sign),
+                arrow_y=0.,arrow_bottom=.28,arrow_size=1.35,
+                distance=dict(value=sign.get('distance',''),y=0.,baseline=.30,height=.42,max_width=w-.8))
 
 
 def advance_layout(sign):
     """One shared layout for sign geometry, placement tests and the authoring preview."""
+    if portrait(sign.get('state', '')):
+        return portrait_layout(sign)
     label, w, h = sign['label'], sign['width'], sign['height']
     routes = route_symbols(label['routes'], sign.get('state', ''))
     names = label['names'] or ([] if routes else ['EXIT '+label['ref']])
     arrow = advance_arrow(sign)
-    left_arrow = .95 if arrow and sign['side']<0 else 0.
-    right_arrow = .95 if arrow and sign['side']>0 else 0.
+    left_arrow = right_arrow = 0.
     left = -w/2+.38+left_arrow+(1.45 if routes else 0.)
     right = w/2-.38-right_arrow
     cap, pitch = .64, .89
@@ -512,16 +563,24 @@ def advance_layout(sign):
                    width=1.20 if route['kind'] in ('interstate','us') and len(route['number'])>=3 else .96,
                    height=.96)
                for i,route in enumerate(routes)]
-    return dict(lines=lines,routes=symbols,arrow=arrow,arrow_y=(w/2-.62)*(1 if sign['side']>0 else -1),
-                arrow_bottom=centre_z-.30,distance=dict(value=sign.get('distance',''),y=0.,
+    return dict(lines=lines,routes=symbols,arrow=arrow,arrow_y=0.,
+                arrow_bottom=.16,arrow_size=1.,distance=dict(value=sign.get('distance',''),y=0.,
                     baseline=.27,height=.38,max_width=w-.8))
 
 
-def dimensions(label, kind):
+def dimensions(label, kind, state=''):
     if sign_style(label) == 'rest_area':
         return (2.25, 3.05) if kind == 'ramp' else (3.0, 3.6)
     if kind == 'ramp':
         return max(2.3, min(4.3, text_width(label['ref'], .76)+1.1)), 2.15
+    if portrait(state):
+        routes = route_symbols(label['routes'], state)
+        names = label['names'] or ([] if routes else ['EXIT '+label['ref']])
+        groups = [(1.08 if r['kind'] in ('us','interstate') and len(r['number']) >= 3 else .86)
+                  + (.28+guide_width(r['qualifier'].title(),.46)
+                     if r['qualifier'] in ('NORTH','SOUTH','EAST','WEST') else 0.) for r in routes]
+        width = min(6.0, max(3.5, max([guide_width(s,.58) for s in names]+groups+[0.])+.65))
+        return width, max(width*1.22, .6+len(routes)*1.20+len(names)*.85+1.1)
     lines = label['names'] or ([] if label['routes'] else ['EXIT '+label['ref']])
     longest = max([guide_width(s, .64) for s in lines]+[2.7])
     width = min(8.5, max(5., longest+.76+.95+(1.45 if label['routes'] else 0.)))
@@ -633,6 +692,24 @@ class Mesh:
                           material,[(u0,v0),(u1,v0),(u1,v1),(u0,v1)])
             cursor += glyph['advance']*scale
 
+    def distance_text(self, row, bottom, stacked=False):
+        value = row['value']
+        if not value:
+            return
+        match = re.fullmatch(r'1/([24]) MILE', value) if stacked else None
+        if match:
+            h = row['height']
+            word = guide_width('MILE', h)
+            start = row['y']-(.92+word)/2
+            baseline = bottom+row['baseline']
+            self.guide_text('1',start+.12,baseline+.35,.28,.26)
+            self.guide_text(match[1],start+.55,baseline-.02,.30,.32)
+            self.quad([(.079,start+.19,baseline-.02),(.079,start+.23,baseline-.02),
+                       (.079,start+.53,baseline+.65),(.079,start+.49,baseline+.65)],1)
+            self.guide_text('MILE',start+.92+word/2,baseline+.06,h,word+.01)
+        else:
+            self.guide_text(value,row['y'],bottom+row['baseline'],row['height'],row['max_width'])
+
     def route_shield(self, route, bottom_offset=0.):
         y,bottom,w,h = route['y'],route['bottom']+bottom_offset,route['width'],route['height']
         kind = route['kind']
@@ -726,7 +803,9 @@ class Mesh:
         width, height = sign['width'], sign['height']
         bottom = sign['bottom']-self.centre[2]
         label = sign['label']
-        for y, base in zip((-width*.32, width*.32),sign.get('bases',[self.centre[2]]*2)):
+        offsets = sign.get('post_offsets', (-.32, .32))
+        for off, base in zip(offsets,sign.get('bases',[self.centre[2]]*len(offsets))):
+            y = width*off
             self.box((-.12,y-.07,base-self.centre[2]-.2),(.02,y+.07,bottom+height-.1),2)
         side = 1 if sign['side'] > 0 else -1
         if sign.get('style',sign_style(label)) == 'rest_area':
@@ -735,7 +814,7 @@ class Mesh:
             first,second = ('WELCOME','CENTER') if welcome else ('REST','AREA')
             self.text(first,0.,bottom+height-.83,.53,width-.4)
             self.text(second,0.,bottom+height-1.62,.53,width-.4)
-            if sign['kind'] == 'ramp':
+            if sign['kind'] in ('ramp', 'decision'):
                 self.arrow(0.,bottom+.34,side<0,1.25)
             else:
                 self.text(sign['distance'],-.3*side,bottom+.36,.38,width-1.35)
@@ -761,12 +840,14 @@ class Mesh:
         layout=advance_layout(sign)
         for line in layout['lines']:
             self.guide_text(line['value'],line['y'],bottom+line['baseline'],line['height'],line['max_width'])
+        for line in layout.get('directions', ()):
+            self.guide_text(line['value'],line['y'],bottom+line['baseline'],line['height'],line['max_width'])
         for route in layout['routes']:
             self.route_shield(route,bottom)
         distance=layout['distance']
-        self.guide_text(distance['value'],distance['y'],bottom+distance['baseline'],distance['height'],distance['max_width'])
+        self.distance_text(distance,bottom,portrait(sign.get('state','')))
         if layout['arrow']:
-            self.arrow(layout['arrow_y'],bottom+layout['arrow_bottom'],side<0,.95)
+            self.arrow(layout['arrow_y'],bottom+layout['arrow_bottom'],side<0,layout['arrow_size'])
 
     def result(self):
         if not self.t: return None

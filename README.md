@@ -33,6 +33,9 @@ the mod, report problems, and get an IP to join a BeamMP.Earth server (see [Mult
   retaining walls where a road is cut into a hill (dry stone in the mountains and towns, concrete along major roads)
   and stone parapets along mountain roads' drops; street lights, utility poles with wires, traffic signals,
   stop signs and speed-limit signs (mph or km/h by country).
+- Highway lane-count changes away from ramps taper on the left, continuing across source segments and bridges.
+  US exit guide signs outside Michigan use tall panels with stacked route shields; advance panels show distance
+  only, with a separate destination-and-arrow panel just before the exit. Michigan retains its panel shape.
 - Bridges drawn as their real type (beam, truss, arch, cable-stayed, suspension) with real heights and spans, piers
   that keep clear of the roads under them; tunnels through hills, with portals, lights and low arches where little
   is over them.
@@ -82,11 +85,12 @@ the mod, report problems, and get an IP to join a BeamMP.Earth server (see [Mult
   on the game's minimap (bottom left), which shows the roads around you.
 - **Autodrive**: the car drives itself along the GPS route (in lane, legal speed, minding traffic).
 - Saved places and recent places.
-- Driving position and heading autosave every 10 seconds and when leaving the level. The default
-  **Where you left off** spawn resumes the latest checkpoint. In **Settings > BeamNG.Earth > Driving progress**,
+- Singleplayer freeroam position and heading autosave every 10 seconds and when leaving the level. The default
+  **Where you left off** spawn resumes the latest checkpoint. In **Settings > BeamNG.Earth > Driving progress (singleplayer)**,
   adjust the interval (1–300 seconds) or disable autosave/resume. Two alternating checkpoints in the game's
   settings folder preserve the previous save if a crash interrupts a write. Saved-place and random spawns
-  still take precedence when explicitly selected.
+  still take precedence when explicitly selected. Missions, career, scenarios, and BeamMP do not read or overwrite
+  these checkpoints. BeamMP uses separate [server-owned player saves](beammp/README.md#saved-player-positions).
 
 **Interface and tools**
 - A slim status bar (street, town, country, and under it the loading progress of the ground, roads & buildings, trees and

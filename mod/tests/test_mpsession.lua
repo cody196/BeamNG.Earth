@@ -19,14 +19,16 @@ for _, bad in ipairs({ 80, 70000, 5.5, 'x' }) do
 end
 
 -- BeamMP's client API, stubbed
-local handlers, sent = {}, {}
+local handlers, sent, encoded = {}, {}, {}
 function AddEventHandler(name, fn) handlers[name] = fn end
-function TriggerServerEvent(name, data) sent[#sent + 1] = { name = name, data = data } end
+function TriggerServerEvent(name, data) sent[#sent + 1] = { name = name, data = data, value = encoded[data] } end
 function jsonEncode(t)
   local parts = {}
   for k, v in pairs(t) do parts[#parts + 1] = string.format('%q:%s', k, tostring(v)) end
   table.sort(parts)
-  return '{' .. table.concat(parts, ',') .. '}'
+  local s = '{' .. table.concat(parts, ',') .. '}'
+  encoded[s] = t
+  return s
 end
 local decoded = {}
 function jsonDecode(s) return decoded[s] end
@@ -344,4 +346,46 @@ do
   T.check(back == 0, 'copy check: back near its figure: the wait starts over')
 end
 
+do -- Saved server positions are exact, retried when the world server is not ready, and acknowledged after placement.
+  ms.reset()
+  ms.onPostJoin()
+  local oldCore=beamngEarth_core
+  local status, attempts='retry',0
+  local saved={lat=42.1,lon=-84.9,height=230,heading=215,resume=true,token='server-checkpoint'}
+  local current={lat=42.1,lon=-84.9,height=230,heading=215}
+  beamngEarth_core={
+    multiplayerRestoreStatus=function() return status end,
+    restoreMultiplayer=function(p)
+      attempts=attempts+1
+      T.check(p.lon==saved.lon and p.heading==215,'server restore keeps exact longitude and heading')
+      if attempts==1 then return false end
+      status='loading'; return true
+    end,
+    drivingPose=function() return current end,
+  }
+  decoded.restore=saved
+  handlers.bngeGoTo('restore')
+  ms.update(.1,anchor,{x=0,y=0,z=0})
+  T.check(attempts==1 and sent[#sent].value.progress==nil and sent[#sent].value.resumeAck==nil,
+    'failed initial request holds checkpoint and suppresses loading poses')
+  ms.update(ms.POSE_S+.1,anchor,{x=0,y=0,z=0})
+  T.check(attempts==2 and sent[#sent].value.progress==nil,'restore retries when world server becomes ready')
+  handlers.bngeGoTo('restore')
+  ms.update(ms.POSE_S+.1,anchor,{x=0,y=0,z=0})
+  T.check(attempts==2,'duplicate server restore does not request another teleport while loading')
+  status='ready'
+  ms.update(.1,anchor,{x=0,y=0,z=0})
+  T.check(sent[#sent].value.resumeAck==saved.token and sent[#sent].value.progress==current,
+    'first stable vehicle pose acknowledges completion and resumes server saves')
+  handlers.bngeGoTo('restore')
+  ms.update(ms.POSE_S+.1,anchor,{x=0,y=0,z=0})
+  T.check(attempts==2,'completed restore runs once per session')
+  current=nil
+  ms.update(ms.POSE_S+.1,anchor,{x=0,y=0,z=0,camera=true})
+  T.check(sent[#sent].value.progress==nil,'camera or unowned vehicle does not produce a checkpoint')
+  ms.reset(); ms.onPostJoin()
+  ms.update(.1,anchor,{x=0,y=0,z=0})
+  T.check(sent[#sent].value.resumeAck==nil,'new session forgets previous restore acknowledgment')
+  beamngEarth_core=oldCore
+end
 T.done('test_mpsession')

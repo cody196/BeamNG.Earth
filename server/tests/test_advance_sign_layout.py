@@ -15,12 +15,12 @@ def sign(distance='1 MILE',routes=('M 71',),names=('Durand','Corunna'),side=1):
 
 
 class AdvanceLayoutTest(unittest.TestCase):
-    def test_only_quarter_mile_advance_panels_have_an_arrow(self):
+    def test_advance_panels_have_distances_without_arrows(self):
         for distance in ('1 MILE','1/2 MILE','1/4 MILE','500 m'):
             for side in (-1,1):
                 mesh=exitsigns.Mesh((0.,0.,0.))
                 with patch.object(mesh,'arrow',wraps=mesh.arrow) as arrow:mesh.panel(sign(distance,side=side))
-                self.assertEqual(arrow.call_count,int(distance=='1/4 MILE'))
+                self.assertEqual(arrow.call_count,0)
                 if arrow.call_count:self.assertEqual(arrow.call_args.args[2],side<0)
 
     def test_rest_area_advance_arrows_obey_the_same_rule_and_gore_arrows_remain(self):
@@ -29,7 +29,7 @@ class AdvanceLayoutTest(unittest.TestCase):
             s['width'],s['height']=exitsigns.dimensions(s['label'],'advance')
             mesh=exitsigns.Mesh((0.,0.,0.))
             with patch.object(mesh,'arrow',wraps=mesh.arrow) as arrow:mesh.panel(s)
-            self.assertEqual(arrow.call_count,int(distance=='1/4 MILE'))
+            self.assertEqual(arrow.call_count,0)
         s=sign();s['kind']='ramp';s['width'],s['height']=exitsigns.dimensions(s['label'],'ramp')
         mesh=exitsigns.Mesh((0.,0.,0.))
         with patch.object(mesh,'arrow',wraps=mesh.arrow) as arrow:mesh.panel(s)

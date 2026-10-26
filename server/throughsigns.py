@@ -221,10 +221,13 @@ def _assembly(frame, obj, pavements, q, direction, box, elev, chunks, content,
     right = np.array([travel[1], -travel[0]])
     cross = signroads.cross(line)
     edge = abs((cross[k]*(1.-t)+cross[k+1]*t)@right)*width/2.
+    lat, lon, _ = frame.enu_to_geodetic(float(at_xy[0]), float(at_xy[1]), 0.)
+    import signstates
+    state = str(signstates.states(lat, lon).item())
     w, h = dimensions(content)
     panels = [dict(label=content, width=w, height=h, offset=0., exit=False)]
     if exit_label:
-        ew, eh = signs.dimensions(exit_label, 'advance')
+        ew, eh = signs.dimensions(exit_label, 'advance', state)
         panels[0]['offset'] = -side*(ew+.25)/2.
         panels.append(dict(label=exit_label, width=ew, height=eh,
                            offset=side*(w+.25)/2., exit=True))
@@ -249,12 +252,10 @@ def _assembly(frame, obj, pavements, q, direction, box, elev, chunks, content,
     bases = [signs._ground_z(frame, elev, point) for _, point in poles]
     # Entire underside clears the rendered carriageway; columns stand off pavement.
     bottom = max(road_z+6., max(bases)+.6)
-    lat, lon, _ = frame.enu_to_geodetic(float(at_xy[0]), float(at_xy[1]), 0.)
-    import signstates
     return dict(id=obj['id'], kind='through', centre=[*map(float, at_xy), road_z],
                 travel=travel.tolist(), panels=panels, bottom=bottom, bases=bases,
                 poles=[v[0] for v in poles], side=side, distance=distance,
-                state=str(signstates.states(lat, lon).item()))
+                state=state)
 
 
 def place(frame, objects, pavements, box, elev, chunks=(), mph=True, allow_outside=False):
@@ -357,9 +358,11 @@ class Mesh(signs.Mesh):
                     side=sign['side'], kind='advance', distance=sign['distance'], state=sign['state']))
                 for row in layout['lines']:
                     self.guide_text(row['value'],row['y'],bottom+row['baseline'],row['height'],row['max_width'])
+                for row in layout.get('directions', ()):
+                    self.guide_text(row['value'],row['y'],bottom+row['baseline'],row['height'],row['max_width'])
                 for route in layout['routes']:
                     self.route_shield(route,bottom)
-                self.guide_text(sign['distance'],0.,bottom+.27,.38,w-.8)
+                self.distance_text(layout['distance'],bottom,signs.portrait(sign['state']))
             else:
                 self.rounded_panel(w,bottom,h,0)
                 routes = signs.route_symbols(content['routes'], sign['state'])

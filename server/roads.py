@@ -3474,12 +3474,14 @@ def twin_tunnels(parts):
     return out
 
 
-def _tunnel_chunks(tunnels, cells, exact, terrain_paint=True, left_hand=False):
+def _tunnel_chunks(tunnels, cells, exact, terrain_paint=True, left_hand=False, lane_layouts=None):
     """The chunks of the tunnels crossing the tile box `exact`: the road surface ("deck", "tunnel": the tube is
     built around it, roadmesh.tunnel) and its lines, every one "fixed" at the floor's heights; a surface chunk
     ending at its part's end carries "portal": [start is one, end is one]. Twin tunnels (twin_tunnels): their surfaces
     are floors without a tube ("no_tube"), and one "tube_only" chunk along their midline (not drawn as a road) carries
     the tube round both, with the first's portals."""
+    import lanetransitions
+    lane_layouts = lane_layouts or {}
     out = []
     if getattr(tunnels, "open_parts", None) is not None:
         for fid, spec, xy, z, lon in tunnels.open_parts(cells, exact):
@@ -3487,7 +3489,7 @@ def _tunnel_chunks(tunnels, cells, exact, terrain_paint=True, left_hand=False):
                 continue
             pts = np.c_[xy, z]
             for look, w, line in [(look_of(spec), spec.width, pts)] + [
-                    (lk, w2, ln) for lk, w2, ln in extras(spec, pts, lon, left_hand)
+                    (lk, w2, ln) for lk, w2, ln in lanetransitions.extras(fid, spec, pts, lon, left_hand, lane_layouts)
                     if lk["m"] != SIDEWALK["m"] and lk["m"] != GUTTER["m"]]:
                 for piece in clip_polyline(line, *exact):
                     for c in split(densify(simplify(piece))):
@@ -3511,7 +3513,7 @@ def _tunnel_chunks(tunnels, cells, exact, terrain_paint=True, left_hand=False):
         if terrain_paint and terrain_surface(spec):
             look = None                     # painted in the ground layer, as any other ground part
         lines = [] if look is None else [({**look, "deck": True, "tunnel": True, "no_tube": n in twinned}, spec.width, pts)]
-        for look, w, line in rampmerges.trim(fid, extras(spec, pts, lon, left_hand), layouts):
+        for look, w, line in rampmerges.trim(fid, lanetransitions.extras(fid, spec, pts, lon, left_hand, lane_layouts), layouts):
             if look["m"] != SIDEWALK["m"] and look["m"] != GUTTER["m"]:
                 lines.append((look, w, line))
         jobs.append((fid, (pts[0, :2], pts[-1, :2]), lines))
@@ -3548,14 +3550,14 @@ def _tunnel_chunks(tunnels, cells, exact, terrain_paint=True, left_hand=False):
     return roadmarkings.paint(out)
 
 
-def _bridge_chunks(frame, bseen, elev, exact, bridges=None, cells=None, left_hand=False):
+def _bridge_chunks(frame, bseen, elev, exact, bridges=None, cells=None, left_hand=False, lane_layouts=None):
     """The chunks of the bridges crossing the tile box `exact` (deck surfaces flagged "deck", their
     centre / edge lines; every bridge chunk "fixed": its z is the deck's, not the ground's). Deck
     heights: from `bridges` (BridgeProfiles: whole chains, shared by every tile), else from the
     chains found among the given cells (deck_heights; tests)."""
     if bridges is not None:
         return _deck_chunks([(fid, spec, np.c_[xy, z], lon) for fid, spec, xy, z, lon in bridges.parts(cells, exact)
-                             if np.isfinite(z).all()], exact, left_hand)
+                             if np.isfinite(z).all()], exact, left_hand, lane_layouts)
     if not bseen:
         return []
     parts = []                                  # (fid, spec, xy (k, 2), lon)
@@ -3590,7 +3592,7 @@ def _bridge_chunks(frame, bseen, elev, exact, bridges=None, cells=None, left_han
             import grading
             z = np.maximum(_smooth_pinned(z, DECK_STEP, grading.SIGMA_M), g)
         decks.append((fid, spec, np.c_[xy, z], lon))
-    return _deck_chunks(decks, exact, left_hand)
+    return _deck_chunks(decks, exact, left_hand, lane_layouts)
 
 
 DECK_CONTEXT_M = 24.0   # m around a tile its bridges' decks are passed as context (roadmesh.deck: whether an edge has
@@ -3618,10 +3620,12 @@ def _corner_look(point, roads):
     return LOOK["paved"]
 
 
-def _deck_chunks(decks, exact, left_hand=False):
+def _deck_chunks(decks, exact, left_hand=False, lane_layouts=None):
     """Deck + line chunks of bridge parts [(fid, spec, pts (k, 3), lon)] clipped to the box `exact`, and their decks
     within DECK_CONTEXT_M of it as "ctx" chunks (not drawn: build_tile's caller hands them to roadmesh.deck)."""
     import rampmerges
+    import lanetransitions
+    lane_layouts = lanetransitions.plans(decks) if lane_layouts is None else lane_layouts
     layouts = rampmerges.plans(decks)
     out = []
     x0, y0, x1, y1 = exact
@@ -3635,7 +3639,7 @@ def _deck_chunks(decks, exact, left_hand=False):
                     out.append(ch)
     for fid, spec, pts, lon in decks:
         lines = [({**_deck_look(spec), "deck": True}, spec.width, pts)]
-        for look, w, line in rampmerges.trim(fid, extras(spec, pts, lon, left_hand), layouts):
+        for look, w, line in rampmerges.trim(fid, lanetransitions.extras(fid, spec, pts, lon, left_hand, lane_layouts), layouts):
             if look["m"] != SIDEWALK["m"] and look["m"] != GUTTER["m"]:
                 lines.append((look, w, line))
         for look, w, line in lines:
@@ -3700,6 +3704,8 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
     x0, y0, x1, y1 = tile_bbox(tx, ty)
     box = (x0 - OVERLAP, y0 - OVERLAP, x1 + OVERLAP, y1 + OVERLAP)
     near = (x0 - NEAR_M, y0 - NEAR_M, x1 + NEAR_M, y1 + NEAR_M)
+    import lanetransitions
+    lane_layouts = lanetransitions.source(frame, cells, urban_fn, widths, left_hand)
     seen, bseen = {}, {}
     for feats in cells:
         if feats is None or len(feats) == 0:
@@ -3756,7 +3762,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                     if len(c) >= 2:
                         chunks.append(_chunk(look, lw, c))
     decks_near = []                             # (retaining_walls: none under a bridge)
-    for ch in _bridge_chunks(frame, bseen, elev, (x0, y0, x1, y1), bridges, cells, left_hand):
+    for ch in _bridge_chunks(frame, bseen, elev, (x0, y0, x1, y1), bridges, cells, left_hand, lane_layouts):
         if ch.get("deck"):
             decks_near.append(ch)
         if not ch.get("ctx"):
@@ -3764,7 +3770,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         elif deck_context is not None:          # the decks around the tile (roadmesh.deck's parapet test)
             deck_context.append(ch)
     if tunnels is not None:                     # TunnelProfiles: road surfaces and lines through tunnels
-        tch = _tunnel_chunks(tunnels, cells, (x0, y0, x1, y1), terrain_paint, left_hand)
+        tch = _tunnel_chunks(tunnels, cells, (x0, y0, x1, y1), terrain_paint, left_hand, lane_layouts)
         chunks.extend(tch)
         import roadmesh
         # (retaining walls: none in a tube either, its vault over them; between twin tunnels' carriageways one stood in
@@ -3829,12 +3835,13 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
     merge_layouts = rampmerges.ground(frame, cells, urban_fn, widths, left_hand)
     runs_near = []                              # sidewalk runs near the tile, before clipping (walks: below)
     for fid, spec, pts, lon in roads:
-        ex = extras(spec, pts, lon, left_hand) if fid not in jinternal else []    # inside a junction: none
+        ex = lanetransitions.extras(fid, spec, pts, lon, left_hand, lane_layouts) if fid not in jinternal else []    # inside a junction: none
         ex = rampmerges.trim(fid, ex, merge_layouts)
         if not ex:
             continue
         blockers = [(p2[:, :2], s2.width / 2 + CUT_MARGIN) for f2, s2, p2, _ in roads
-                    if f2 != fid and not rampmerges.related(fid, f2, merge_layouts)]
+                    if f2 != fid and not rampmerges.related(fid, f2, merge_layouts)
+                    and not lanetransitions.related(fid, f2, lane_layouts)]
         walk_blockers = [(p2[:, :2], s2.width / 2 if (fid, f2) in cornered else sidewalk_stop(spec, fid, s2, f2))
                          for f2, s2, p2, _ in roads if f2 != fid]
         # a median's band stops at the other carriageways' curbs only (their sidewalk is on their far side: it cut

@@ -16,6 +16,25 @@ function jsonWriteFile(path, p)
 end
 log = function() end
 
+core_gamestate = {state={state='freeroam'}}
+T.check(resume.singleplayerFreeroam(), 'singleplayer freeroam eligible')
+for _, mode in ipairs({'multiplayer','scenario','mission','career','menu'}) do
+  core_gamestate.state.state=mode
+  T.check(not resume.singleplayerFreeroam(), mode..' cannot use singleplayer progress')
+end
+core_gamestate.state.state='freeroam'
+MPCoreNetwork={isMPSession=function() return true end}
+T.check(not resume.singleplayerFreeroam(), 'BeamMP excluded even before it changes the game state')
+MPCoreNetwork=nil
+career_career={isActive=function() return true end}
+T.check(not resume.singleplayerFreeroam(), 'career freeroam excluded')
+career_career=nil
+gameplay_missions_missionManager={getForegroundMissionId=function() return 'active-mission' end}
+T.check(not resume.singleplayerFreeroam(), 'foreground mission excluded even with freeroam UI')
+gameplay_missions_missionManager=nil
+core_gamestate=nil
+T.check(not resume.singleplayerFreeroam(), 'unknown mode does not save or restore')
+
 T.check(resume.load() == nil, 'first run without a checkpoint')
 local a = geodesy.newAnchor(42.96484, -83.85241)
 local p = resume.capture(a, {x=12000,y=4300,z=255}, {x=1,y=0,z=0})

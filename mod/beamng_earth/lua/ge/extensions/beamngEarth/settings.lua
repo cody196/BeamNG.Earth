@@ -36,7 +36,7 @@ M.LEVEL_ID = 'beamng_earth'
 
 -- key -> { kind = 'number'|'bool'|'enum', default, min, max, values, label }. Order = ORDER.
 M.SCHEMA = {
-  autoResume = { kind = 'bool', default = true, label = 'Save and restore driving position' },
+  autoResume = { kind = 'bool', default = true, label = 'Save and restore singleplayer freeroam position' },
   positionSaveInterval = { kind = 'number', default = 10, min = 1, max = 300, label = 'Position autosave interval (seconds)' },
   rebaseDistance = { kind = 'number', default = rebase.DEFAULT_DISTANCE, min = rebase.MIN_DISTANCE,
     max = rebase.MAX_DISTANCE, label = 'Rebase distance (m)' },

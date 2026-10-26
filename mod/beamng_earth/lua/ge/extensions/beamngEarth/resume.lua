@@ -4,6 +4,19 @@ local M = {}
 M.FILES = { '/settings/beamngEarthResume1.json', '/settings/beamngEarthResume2.json' }
 local current, slot, elapsed, loaded = nil, nil, 0, false
 
+-- Check the actual game mode, not just the level name (missions can run in freeroam levels).
+function M.singleplayerFreeroam()
+  if require('beamngEarth/beammp').inSession() then return false end
+  local gs = rawget(_G, 'core_gamestate')
+  if not gs or not gs.state or gs.state.state ~= 'freeroam' then return false end
+  local fr = rawget(_G, 'freeroam_freeroam')
+  if fr and fr.state and fr.state.freeroamActive == false then return false end
+  local career = rawget(_G, 'career_career')
+  if career and career.isActive and career.isActive() then return false end
+  local missions = rawget(_G, 'gameplay_missions_missionManager')
+  return not (missions and missions.getForegroundMissionId and missions.getForegroundMissionId())
+end
+
 local function finite(v)
   return type(v) == 'number' and v == v and math.abs(v) < math.huge
 end
