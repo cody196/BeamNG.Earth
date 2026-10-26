@@ -26,8 +26,9 @@ G.SHARE_PORT = 47621
 -- Per-account positions, owned by this server (independent of singleplayer Driving Progress).
 G.SAVE_POSITIONS = true
 G.SAVE_SECONDS = 10
--- In the server root, outside the plugin directory so writes do not trigger Lua reloads.
-G.SAVE_FILES = { 'bnge_player_positions1.json', 'bnge_player_positions2.json' }
+-- Relative to the server root, outside the plugin directory (no Lua reloads).
+G.SAVE_DIR = 'data'
+G.SAVE_FILES = { G.SAVE_DIR .. '/bnge_player_positions1.json', G.SAVE_DIR .. '/bnge_player_positions2.json' }
 -- The BeamNG.Earth server list (the "BeamNG.Earth" tab of BeamMP's server browser, seen only by players with
 -- BeamNG.Earth). In ServerConfig.toml, Private = false with your AuthKey puts this server on it; this plugin then keeps
 -- it off BeamMP's own public list (every BeamMP player sees that one, with or without BeamNG.Earth) by switching
@@ -69,8 +70,66 @@ function G.validProgress(p)
     and finite(p.heading) and p.heading >= 0 and p.heading < 360
 end
 
+-- Retain a portable .pc configuration, never a local filename, vehicle collection,
+-- serialized Lua, damage snapshot or another player's vehicle. Bounded plain data.
+function G.vehicleConfig(model, config)
+  if type(model) ~= 'string' or #model > 80 or not model:match('^[%w_-]+$') or model == 'unicycle'
+    or type(config) ~= 'table' or type(config.parts) ~= 'table' then return nil end
+  local out = {format=2, parts={}, vars={}}
+  local count = 0
+  for key, value in pairs(config.parts) do
+    count = count + 1
+    if count > 2048 or type(key) ~= 'string' or #key > 512 or type(value) ~= 'string' or #value > 256 then return nil end
+    out.parts[key] = value
+  end
+  count = 0
+  if config.vars ~= nil and type(config.vars) ~= 'table' then return nil end
+  for key, value in pairs(config.vars or {}) do
+    count = count + 1
+    if count > 512 or type(key) ~= 'string' or #key > 128 or not finite(value) then return nil end
+    out.vars[key] = value
+  end
+  if type(config.licenseName) == 'string' then out.licenseName = config.licenseName:sub(1,64) end
+  if type(config.mainPartName) == 'string' then out.mainPartName = config.mainPartName:sub(1,128) end
+  if type(config.paints) == 'table' then
+    out.paints = {}
+    for i=1,3 do
+      local paint = config.paints[i]
+      if paint then
+        if type(paint) ~= 'table' or type(paint.baseColor) ~= 'table' then return nil end
+        local p = {baseColor={}}
+        for j=1,4 do
+          if not finite(paint.baseColor[j]) then return nil end
+          p.baseColor[j] = paint.baseColor[j]
+        end
+        for _,key in ipairs({'metallic','roughness','clearcoat','clearcoatRoughness'}) do
+          if paint[key] ~= nil and not finite(paint[key]) then return nil end
+          p[key] = paint[key]
+        end
+        out.paints[i] = p
+      end
+    end
+  end
+  return {model=model, config=out}
+end
+
+function G.playerVehicle(pid, serverId)
+  if type(serverId) ~= 'string' or #serverId > 40 or not MP or not MP.GetPlayerVehicles then return nil end
+  local owner, id = serverId:match('^(%d+)%-(%d+)$')
+  if not owner or tonumber(owner) ~= pid then return nil end
+  local ok, vehicles = pcall(MP.GetPlayerVehicles, pid)
+  if not ok or type(vehicles) ~= 'table' then return nil end
+  local raw = vehicles[tonumber(id)] or vehicles[id]
+  if type(raw) ~= 'string' or #raw > 1024*1024 then return nil end
+  local start = raw:find('{', 1, true)
+  if not start then return nil end
+  local parsed, data = pcall(Util.JsonDecode, raw:sub(start))
+  if not parsed or type(data) ~= 'table' then return nil end
+  return G.vehicleConfig(data.jbm, data.vcf)
+end
+
 local function progressCopy(p)
-  return {lat=p.lat, lon=p.lon, height=p.height, heading=p.heading, savedAt=p.savedAt}
+  return {lat=p.lat, lon=p.lon, height=p.height, heading=p.heading, savedAt=p.savedAt, vehicle=p.vehicle}
 end
 
 local function readProgress(path)
@@ -85,6 +144,7 @@ local function readProgress(path)
     or data.sequence < 1 or data.sequence % 1 ~= 0 or type(data.players) ~= 'table' then return nil end
   for id, p in pairs(data.players) do
     if not G.accountId({beammp=id}) or not G.validProgress(p) then return nil end
+    p.vehicle = type(p.vehicle) == 'table' and G.vehicleConfig(p.vehicle.model, p.vehicle.config) or nil
   end
   return data
 end
@@ -97,6 +157,16 @@ function G.loadProgress()
       G.checkpoints, G.saveSequence, G.saveSlot = data.players, data.sequence, slot
     end
   end
+  if G.saveSlot == nil then
+    -- One-time import. Once data/ has a valid save, legacy root files are ignored.
+    for _,path in ipairs({'bnge_player_positions1.json', 'bnge_player_positions2.json'}) do
+      local data = readProgress(path)
+      if data and data.sequence > G.saveSequence then
+        G.checkpoints, G.saveSequence, G.progressDirty = data.players, data.sequence, true
+      end
+    end
+    if G.progressDirty then G.saveProgress() end
+  end
 end
 
 function G.saveProgress()
@@ -104,6 +174,10 @@ function G.saveProgress()
   local slot = G.saveSlot == 1 and 2 or 1
   local sequence = G.saveSequence + 1
   local ok = pcall(function()
+    if FS and FS.CreateDirectory then
+      local made, why = FS.CreateDirectory(G.SAVE_DIR)
+      assert(made, why or 'cannot create save directory')
+    end
     local text = Util.JsonEncode({version=1, sequence=sequence, players=G.checkpoints})
     assert(type(text) == 'string', 'JSON encoding failed')
     local f = assert(io.open(G.SAVE_FILES[slot], 'w'))
@@ -120,13 +194,18 @@ function G.saveProgress()
   return true
 end
 
-function G.remember(p, d)
+function G.remember(p, d, pid)
   if not G.SAVE_POSITIONS or not p.account or not G.validProgress(d.progress) then return end
+  local vehicle = G.playerVehicle(pid, d.progress.vehicleId)
+  -- A modern client can have a car while its spawn is awaiting server acceptance.
+  -- Do not replace a good save with an unconfirmed car or a walking-mode avatar.
+  if tonumber(d.vehicleResume) == 1 and not vehicle then return end
   if p.restorePlace then
     if d.resumeAck ~= p.restorePlace.token then return end
     p.restorePlace = nil
   end
   local saved = progressCopy(d.progress)
+  saved.vehicle = vehicle -- never trust a configuration embedded in the pose packet
   saved.savedAt = os.time()
   G.checkpoints[p.account], G.progressDirty = saved, true
 end
@@ -205,7 +284,7 @@ function G.onPose(pid, d, name, account)
     p.restorePlace, p.restoreSent = place, G.clock
     return place, moved -- never save the temporary join pose over this checkpoint
   end
-  G.remember(p, d)
+  G.remember(p, d, pid)
   if joining then
     local place = G.meetingPlace(G.live(), pid)
     if place and G.dist(place.lat, place.lon, lat, lon) > G.MEET_M then return place, moved end

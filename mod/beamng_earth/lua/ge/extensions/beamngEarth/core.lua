@@ -397,6 +397,7 @@ end
 
 local function resumeVehicle()
   local veh = getPlayerVehicle(0)
+  if veh and veh.getJBeamFilename and veh:getJBeamFilename() == 'unicycle' then return nil end
   if veh and (st.multiplayer or beammp.inSession()) then
     local mp = rawget(_G, 'MPVehicleGE')
     if not mp or not mp.isOwn or not mp.isOwn(veh:getID()) then return nil end
@@ -1118,14 +1119,38 @@ local function anchorKnown()
 end
 
 local function updateWorld(dt)
-  -- BeamMP joins in free camera. Keep streaming while no owned car exists,
-  -- then place the first owned vehicle at the server checkpoint, with its heading.
+  -- Stream the checkpoint first, then request one normal local BeamMP spawn.
+  -- Wait for server ownership before completing the restore; retries of bngeGoTo
+  -- must never create another car while this one is awaiting acknowledgement.
+  local pendingCar = st.awaitResumeVehicle
+  if pendingCar and not resumeVehicle() and st.anchor and not st.pending and not st.rebasing
+    and st.clock >= st.loadingUntil and beammp.inSession() then
+    local rv = require('beamngEarth/resumevehicle')
+    if pendingCar.spawnId then
+      local obj = scenetree.findObjectById(pendingCar.spawnId)
+      local mp = rawget(_G, 'MPVehicleGE')
+      if obj and mp and mp.isOwn and mp.isOwn(pendingCar.spawnId) then rv.enter(obj) end
+    elseif not pendingCar.spawnAttempted and core_vehicles and core_vehicles.spawnNewVehicle then
+      local x,y,z = st.anchor:geodeticToEnu(pendingCar.lat,pendingCar.lon,pendingCar.height)
+      local ready = not settings.get('roads') or roads.settledFor(st.anchorId,x,y)
+      local ray = rawget(_G,'castRayStatic')
+      local hit = ready and ray and ray(vec3(x,y,z+3),vec3(0,0,-1),200)
+      if hit and hit < 200 then
+        pendingCar.spawnAttempted = true
+        local obj, message = rv.spawn(pendingCar,st.anchor,x,y,z+3-hit+1)
+        if obj then pendingCar.spawnId = obj:getID() end
+        if message then setStatus(message); log('W','beamngEarth',message) end
+      end
+    end
+  end
+  -- A manually spawned owned vehicle can also complete a legacy checkpoint.
   if st.awaitResumeVehicle and resumeVehicle() and st.anchor and not st.pending then
     local saved = st.awaitResumeVehicle
     st.awaitResumeVehicle = nil
     st.placeX, st.placeY, st.floorZ = st.anchor:geodeticToEnu(saved.lat, saved.lon, saved.height)
     st.placeZ, st.placeHeading = st.floorZ + 1, saved.heading
     st.floorUntil, st.placeFrames = st.clock + FLOOR_WAIT_S, PLACE_DELAY_FRAMES
+    require('beamngEarth/resumevehicle').enter(resumeVehicle())
   end
   if st.floorZ and not st.placeFrames then M.floorCheck() end
   if st.placeFrames then
@@ -2069,7 +2094,11 @@ function M.drivingPose()
     and not (st.pending and st.pending.purpose == 'teleport') and not st.rebasing and not st.placeFrames and not st.floorZ
     and not st.awaitResumeVehicle and not dropHold.active and st.clock >= st.loadingUntil then
     local veh = resumeVehicle()
-    if veh then return resume.capture(st.anchor, veh:getPosition(), veh:getDirectionVector()) end
+    if veh then
+      local pose = resume.capture(st.anchor, veh:getPosition(), veh:getDirectionVector())
+      if pose and st.multiplayer then pose.vehicleId = require('beamngEarth/resumevehicle').serverId(veh) end
+      return pose
+    end
   end
 end
 
@@ -2084,6 +2113,7 @@ function M.restoreMultiplayer(saved)
   local p = {version=1, sequence=1, lat=saved.lat, lon=saved.lon, height=saved.height, heading=saved.heading,
     token=saved.token}
   if not resume.valid(p) or type(p.token) ~= 'string' or #p.token > 80 then return false end
+  p.vehicle = require('beamngEarth/resumevehicle').record(saved.vehicle)
   st.multiplayer = true
   return teleportTo(p.lat, p.lon, nil, 'tool', p)
 end

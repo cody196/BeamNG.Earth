@@ -352,12 +352,14 @@ do -- Saved server positions are exact, retried when the world server is not rea
   local oldCore=beamngEarth_core
   local status, attempts='retry',0
   local saved={lat=42.1,lon=-84.9,height=230,heading=215,resume=true,token='server-checkpoint'}
+  saved.vehicle={model='pickup',config={parts={engine='v8'}}}
   local current={lat=42.1,lon=-84.9,height=230,heading=215}
   beamngEarth_core={
     multiplayerRestoreStatus=function() return status end,
     restoreMultiplayer=function(p)
       attempts=attempts+1
       T.check(p.lon==saved.lon and p.heading==215,'server restore keeps exact longitude and heading')
+      T.check(p.vehicle==saved.vehicle,'server vehicle configuration reaches restore unchanged')
       if attempts==1 then return false end
       status='loading'; return true
     end,
@@ -377,6 +379,7 @@ do -- Saved server positions are exact, retried when the world server is not rea
   ms.update(.1,anchor,{x=0,y=0,z=0})
   T.check(sent[#sent].value.resumeAck==saved.token and sent[#sent].value.progress==current,
     'first stable vehicle pose acknowledges completion and resumes server saves')
+  T.check(sent[#sent].value.vehicleResume==1,'pose advertises support for server vehicle persistence')
   handlers.bngeGoTo('restore')
   ms.update(ms.POSE_S+.1,anchor,{x=0,y=0,z=0})
   T.check(attempts==2,'completed restore runs once per session')

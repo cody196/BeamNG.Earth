@@ -952,6 +952,48 @@ do -- Driving progress: real lifecycle, network reply, road readiness, placement
   T.near(placedDir.x,math.sin(math.rad(215)),1e-6,'multiplayer vehicle receives saved heading')
   T.near(core.drivingPose().lat,44,1e-8,'multiplayer checkpoint uses restored vehicle position')
   T.check(reads==0 and saves==savedWrites,'multiplayer restore and driving leave singleplayer files untouched')
+  do -- Automatic vehicle spawn waits for collision, then for BeamMP ownership, exactly once.
+    local oldApi,oldEnter,oldCamera=core_vehicles,be.enterVehicle,commands.setGameCamera
+    local oldFind=scenetree.findObjectById
+    local spawns,entered,camera=0,0,0
+    local spawnOptions,spawnModel
+    core_vehicles={defaultVehicleModel='pickup',getModel=function() return {model={}} end,
+      spawnNewVehicle=function(model,opt)
+        spawns=spawns+1;spawnOptions,spawnModel=opt,model
+        veh.pos=vec3(opt.pos);getPlayerVehicle=oldGet
+        return veh
+      end}
+    scenetree.findObjectById=function(id) return id==veh.id and veh or oldFind(id) end
+    be.enterVehicle=function() entered=entered+1;getPlayerVehicle=oldGet end
+    commands.setGameCamera=function() camera=camera+1 end
+    MPVehicleGE.getServerVehicleID=function() return '7-0' end
+    getPlayerVehicle=function() return nil end
+    own,ready=false,false
+    core.restoreMultiplayer({lat=44,lon=-90,height=121,heading=160,token='mp-car',
+      vehicle={model='semi',config={parts={engine='diesel'},paints={{baseColor={.8,.1,.4,1}}}}}})
+    frames(3);request=last('prepare_anchor')
+    T.check(spawns==0,'no vehicle spawned before checkpoint terrain arrives')
+    serverSend({type='anchor_ready',requestId=request.requestId,anchorId=33,lat=request.lat,lon=request.lon,
+      groundZ=120,terrain=terrainMsg(0,0,'/temp/mp-car.png',0)})
+    frames(90)
+    T.check(spawns==0,'vehicle waits for road and bridge collision readiness')
+    ready=true;frames(5)
+    T.check(spawns==1 and spawnModel=='semi' and spawnOptions.config.parts.engine=='diesel',
+      'saved vehicle automatically spawned once the checkpoint road is ready')
+    T.check(spawnOptions.autoEnterVehicle and spawnOptions.paint.baseColor[3]==.4,
+      'spawn restores paint and requests the driver seat')
+    frames(220)
+    T.check(spawns==1 and core.multiplayerRestoreStatus('mp-car')=='loading',
+      'delayed server ownership cannot duplicate the spawn or acknowledge it early')
+    own=true;frames(90)
+    T.check(entered>0 and camera>0 and core.multiplayerRestoreStatus('mp-car')=='ready',
+      'accepted vehicle is entered and camera restored before checkpoint acknowledgment')
+    T.near(placedDir.x,math.sin(math.rad(160)),1e-6,'automatic vehicle placement keeps saved heading')
+    T.check(core.drivingPose().vehicleId=='7-0','next pose selects exact active owned server vehicle')
+    T.check(reads==0 and saves==savedWrites,'automatic BeamMP vehicle restore leaves singleplayer checkpoints untouched')
+    core_vehicles,be.enterVehicle,commands.setGameCamera=oldApi,oldEnter,oldCamera
+    scenetree.findObjectById=oldFind
+  end
   mp=false
   core.onBeamMPServerLeave()
   settings.set('autoResume',true)

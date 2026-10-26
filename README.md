@@ -218,7 +218,9 @@ BeamNG.Earth runs on [BeamMP](https://beammp.com/) servers (in testing): drive t
 
 Leaving a server turns BeamNG.Earth back on (joining one switches your other mods off).
 
-You are sent to where the others are. Cars show in the right place in everyone's world; other players show on the
+Returning players spawn in their last saved vehicle at their saved position and heading; first-time players are sent
+near the others. These [server-owned checkpoints](beammp/README.md#saved-player-positions) save every 10 seconds in
+the server's `data` folder, separately from singleplayer Driving Progress. Cars show in the right place in everyone's world; other players show on the
 world map (**M**) as green arrows; players far away (another country) are hidden until you meet. Crash damage: a crash
 you watch keeps the damage your own game worked out; a car that crashed out of your sight takes on its owner's damage
 (broken parts and dents) once it comes within about 0.6 miles.

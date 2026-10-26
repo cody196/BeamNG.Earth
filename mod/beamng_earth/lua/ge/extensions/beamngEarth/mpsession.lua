@@ -887,7 +887,7 @@ function M.update(dt, anchor, player)
     end
     TriggerServerEvent('bngePose', jsonEncode({ v = M.PROTO, aLat = anchor.lat, aLon = anchor.lon, lat = lat,
       lon = lon, joined = joined, h = h and math.floor(h * 10 + 0.5) / 10 or nil,
-      resume = 1, resumeAck = resumeAck,
+      resume = 1, vehicleResume = 1, resumeAck = resumeAck,
       progress = not restore and core() and core().drivingPose and core().drivingPose() or nil,
       sp = share and share.port or nil, sc = share and share.code or nil, sw = share and share.weight or nil }))
     stats.poses = stats.poses + 1

@@ -49,8 +49,9 @@ data and little CPU: the world is built on each player's computer.
   version as the server's. Start the BeamNG.Earth app and the BeamMP launcher in either order (the app starts the game,
   or just its world server if the game is already running), then join. Without the app, a window asks to install it:
   the world can't load without it.
-- Returning players resume their last saved position and heading on this server. First-time players are sent near
-  the others. Each player's car shows in the right place in everyone's world, with its dents. Other players show
+- Returning players automatically spawn in their last saved vehicle at their saved position and heading on this
+  server. First-time players are sent near the others. Each player's car shows in the right place in everyone's world,
+  with its dents. Other players show
   on the world map (M) as arrows.
 - (Turned off for now: each player builds their own world, and the setting below does nothing yet.) Players near
   each other share one world origin and split the work of building the world: each piece of the distant
@@ -64,21 +65,31 @@ data and little CPU: the world is built on each player's computer.
 ## Saved player positions
 
 The server records stable driving positions from the clients' two-second updates, writes them every **10 seconds**,
-and flushes the latest received positions on disconnect and server shutdown. It restores position, road/deck height,
-and heading when a player reconnects, including after a server restart. Joining without a car keeps the world loading;
-the first owned vehicle is placed at the checkpoint. Temporary loading positions, free cameras, and other players'
-vehicles do not replace a driving checkpoint.
+and flushes the latest received checkpoints on disconnect and server shutdown. Each checkpoint includes position,
+road/deck height, heading, and the active owned vehicle's model, parts, tuning, paints, and license plate. Vehicle
+configurations come from [BeamMP's server vehicle data](https://docs.beammp.com/scripting/server/latest-server-reference/#mpgetplayervehiclesplayer_id-number-table).
+Damage, fuel levels, and attached trailers are not restored.
+
+When a player reconnects, including after a server restart, the client loads the checkpoint's terrain and road
+collision, spawns the saved vehicle through BeamMP's normal vehicle spawning path, and enters it facing the saved
+heading. It waits for server ownership before completing the restore. A position-only checkpoint from an older
+version, or an unavailable vehicle mod, uses the game's default vehicle. Normal vehicle limits still apply; if an
+automatic spawn is rejected, manually spawning an owned vehicle completes the position restore. Temporary loading
+positions, free cameras, walking avatars, and other players' vehicles do not replace a driving checkpoint.
 
 Saves use the authenticated account's permanent `beammp` identifier, independent of display names or temporary
 player IDs ([BeamMP API](https://docs.beammp.com/scripting/server/latest-server-reference/#mpgetplayeridentifiersplayer_id-number-table)).
 Guest sessions are not persisted. Each server keeps its own saves, separate from singleplayer Driving Progress.
 
 Edit `G.SAVE_POSITIONS` and `G.SAVE_SECONDS` near the top of `Resources/Server/BeamNGEarth/main.lua`, then restart,
-to enable/disable this feature or change its save interval. The two files `bnge_player_positions1.json` and
-`bnge_player_positions2.json` live beside `ServerConfig.toml`; keep both when migrating the server. Alternating files
-preserve the previous complete save if a write is interrupted. They are outside `Resources/Server` to avoid plugin
-reloads when saving.
+to enable/disable this feature or change its save interval. The plugin automatically creates a `data` folder in the
+server directory, beside `ServerConfig.toml`, and reads/writes `data/bnge_player_positions1.json` and
+`data/bnge_player_positions2.json`. Keep both when migrating the server. Alternating files preserve the previous
+complete save if a write is interrupted. They are outside `Resources/Server` to avoid plugin reloads when saving.
+
+Existing saves beside `ServerConfig.toml` migrate automatically into `data` if that folder has no valid checkpoint
+file. The original root files remain as backups; after migration, valid files in `data` take precedence.
 
 Update **both** the server plugin and `Resources/Client/beamng_earth.zip`, then restart the server and have players
-reconnect. Older clients keep the original join-near-others behavior. The singleplayer autosave toggle and interval
-do not control BeamMP saves.
+reconnect. Vehicle spawning requires this updated client; older versions may only restore position or join near
+other players. The singleplayer autosave toggle and interval do not control BeamMP saves.
