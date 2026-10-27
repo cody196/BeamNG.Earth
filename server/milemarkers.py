@@ -109,9 +109,11 @@ def references():
                 out.append(_object(state, route, mile, direction, point, axis,source))
     import medianbarriers
     known = {(o['mile_marker']['state'], o['mile_marker']['route'], o['mile_marker']['mile']) for o in out}
-    for route, mile, lon, lat, ax, ay in medianbarriers.inventory()[2]:
-        if ('KY', int(route), mile) not in known:
-            out.append(_object('KY', int(route), mile, 'N', [lon, lat], [ax, ay], 'dot:ky:osm-calibrated'))
+    for state, stations in medianbarriers.station_sets():
+        for route, mile, lon, lat, ax, ay in stations:
+            if (state, int(route), mile) not in known:
+                out.append(_object(state, int(route), mile, 'N', [lon, lat], [ax, ay],
+                                   'dot:'+state.lower()+':osm-calibrated'))
     xy = np.array([[o['lon'], o['lat']] for o in out], float).reshape(-1, 2)
     return tuple(out), xy
 
@@ -146,7 +148,8 @@ def unique_objects(objects):
     return out
 
 
-def osm_records(main_ways, coords, markers, route_ways=(), mile_step=1., extend_miles=0., route_directions=None):
+def osm_records(main_ways, coords, markers, route_ways=(), mile_step=1., extend_miles=0., route_directions=None,
+                calibration_range=(.90, 1.10)):
     """Mapped references plus calibrated whole miles between compatible OSM anchors.
 
     Directed, unbranched Interstate chains only. Ambiguous forks, resets and gaps
@@ -238,7 +241,7 @@ def osm_records(main_ways, coords, markers, route_ways=(), mile_step=1., extend_
                 if abs(m1-m0) < .01 or abs(m1-m0) > 30.:
                     continue
                 ratio = (s1-s0)/(abs(m1-m0)*MILE_M)
-                if not .90 <= ratio <= 1.10:
+                if not calibration_range[0] <= ratio <= calibration_range[1]:
                     continue
                 for tick in range(math.floor(min(m0,m1)/mile_step)+1, math.ceil(max(m0,m1)/mile_step)):
                     mile = round(tick*mile_step, 1)
@@ -296,14 +299,15 @@ def place(frame, objects, pavements, box, elev, chunks=()):
         info = obj.get('mile_marker')
         if not info:
             continue
-        if info.get('state') == 'KY' and info['route'] in (65, 75):
+        if ((info.get('state') == 'KY' and info['route'] in (65, 75)) or
+                (info.get('state') == 'IN' and info['route'] == 65)):
             import medianbarriers
             mounting = medianbarriers.mount(frame, obj, pavements, elev)
             if mounting is not None:
                 centre, travel = mounting
                 # A single post carries separately readable opposite faces.
                 if info['direction'] == 'N' and x0 <= centre[0] < x1 and y0 <= centre[1] < y1:
-                    key = ('KY', info['route'], info['mile'], 'N')
+                    key = (info['state'], info['route'], info['mile'], 'N')
                     if key not in seen:
                         seen.add(key)
                         out.append(dict(id=obj['id'], kind='mile_marker', centre=centre.tolist(),

@@ -1,4 +1,4 @@
-"""Kentucky I-65/I-75 concrete medians, shared by colliders and sign mounts.
+"""I-65/I-75 median treatments, shared by colliders and sign mounts.
 
 Pair the actual rendered carriageways, using the bundled OSM route corridors only
 to identify the Interstate. The 15 m limit measures pavement edge to pavement edge.
@@ -22,15 +22,57 @@ TOP_WIDTH = .24
 STEP = 2.
 OPENING_CLEARANCE = 4.
 MATERIAL = 'bne_ky_barrier_concrete'
+# User-selected I-65 treatment boundaries. The first is the north end of the
+# US 62 bridge in the screenshot; the last is the Exit 9 overpass in Indiana.
+CABLE_START = 37.67789
+CABLE_SWITCH = 37.844624
+JERSEY_RESUME = 38.09602
+INDIANA_END = 38.39415
+OHIO_RIVER = (-85.748, 38.26145, -85.738, 38.26956)
+JERSEY, CABLE_NORTH, CABLE_SOUTH = 1, 2, 3
+
+
+@lru_cache(maxsize=1)
+def _data():
+    return json.loads(DATA.read_text(encoding='utf-8'))
 
 
 @lru_cache(maxsize=1)
 def inventory():
-    data = json.loads(DATA.read_text(encoding='utf-8'))
-    paths = [(int(r), np.asarray(p, float)) for r, _, p in data['paths']]
+    data = _data()
+    paths = [(int(r), np.asarray(p, float)) for r, _, p in data['paths'] + data.get('indiana_paths', [])]
     bounds = np.array([[*p.min(0), *p.max(0)] for _, p in paths])
     stations = np.asarray(data['stations'], float)
     return paths, bounds, stations
+
+
+def station_sets():
+    return [('KY', inventory()[2]), ('IN', np.asarray(_data().get('indiana_stations', []), float).reshape(-1, 6))]
+
+
+@lru_cache(maxsize=1)
+def direction_stations():
+    return np.concatenate([rows for _, rows in station_sets()])
+
+
+def treatment(route, lat, lon):
+    """0: none; 1: Jersey; 2/3: cable on the N/S-bound median shoulder.
+
+    The latitude cuts cross the identified I-65 corridor at the requested places;
+    they never select an unrelated road. Ohio River decks are explicitly excluded
+    even if a future download incorrectly labels one as ground.
+    """
+    import signstates
+    lat, lon = np.broadcast_arrays(np.asarray(lat), np.asarray(lon))
+    states = signstates.states(lat, lon)
+    result = np.where((states == 'KY') & (route in (65, 75)), JERSEY, 0)
+    if route == 65:
+        result = np.where((states == 'IN') & (lat <= INDIANA_END), JERSEY, result)
+        result = np.where((states == 'KY') & (lat >= CABLE_START) & (lat < CABLE_SWITCH), CABLE_NORTH, result)
+        result = np.where((states == 'KY') & (lat >= CABLE_SWITCH) & (lat < JERSEY_RESUME), CABLE_SOUTH, result)
+        w, s, e, n = OHIO_RIVER
+        result = np.where((lon >= w) & (lon <= e) & (lat >= s) & (lat <= n), 0, result)
+    return result
 
 
 def in_region(frame, box):
@@ -76,7 +118,7 @@ def identify(frame, line, direction, corridors):
     if best is None:
         return None
     _, route, point, travel = best
-    stations = inventory()[2]
+    stations = direction_stations()
     stations = stations[stations[:, 0] == route]
     xy = exitsigns._xy(frame, stations[:, 2:4])
     nearest = int(np.sum((xy-point)**2, axis=1).argmin())
@@ -108,13 +150,19 @@ def runs(frame, pavements, box, elev):
             rows.append((str(fid), spec, line, width, *identity))
         else:
             blockers.append((line, width))
-    out = []
+    import cablebarriers
+    out = cablebarriers.runs(frame, rows, blockers, box, elev)
     for fid, spec, line, width, route, north in sorted(rows, key=lambda r: r[0]):
         if not north:
             continue
         xy, _, _ = roadmesh._resample(line, STEP)
         if len(xy) < 2:
             continue
+        la, lo, _ = frame.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.)
+        if not np.any(treatment(route, la, lo) == JERSEY):
+            continue
+        extension = (route == 65) & (la >= JERSEY_RESUME)
+        limit = np.where(extension, 80., MAX_MEDIAN)
         travel = np.gradient(xy, axis=0)*(spec.dir or 1)
         travel /= np.maximum(np.linalg.norm(travel, axis=1)[:, None], 1e-9)
         left = np.c_[-travel[:, 1], travel[:, 0]]
@@ -131,10 +179,17 @@ def runs(frame, pavements, box, elev):
             separation = (delta*left).sum(1)
             gap = separation-(width+other_width)/2.
             parallel = (tangent*(other.dir or 1)*travel).sum(1) < -.90
-            along = np.abs((delta*travel).sum(1)) < 1.5
-            valid = parallel & along & (gap >= .40) & (gap < MAX_MEDIAN) & (separation < best)
+            along = np.abs((delta*travel).sum(1)) < np.where(extension, np.maximum(1.5, .15*separation), 1.5)
+            # The explicit Louisville/Indiana extension continues through paired
+            # ground medians; elsewhere retain the original under-15 m rule.
+            # Rendered highway shoulders can overlap slightly in this urban
+            # corridor. There is still median space between the yellow lines:
+            # use at most 1.2 m of each 1.5 m inside shoulder, retaining 0.3 m
+            # clearance to each travel lane. Never put a wall in overlapping lanes.
+            available = gap + np.where(extension, 2.4, 0.)
+            valid = parallel & along & (available >= .40) & (gap < limit) & (separation < best)
             best[valid] = separation[valid]
-            half_width[valid] = np.minimum(BASE_WIDTH/2., (gap[valid]-.06)/2.)
+            half_width[valid] = np.minimum(BASE_WIDTH/2., (available[valid]-.06)/2.)
             opposite_edge = nearest-left*other_width/2.
             centres[valid] = ((own_edges+opposite_edge)/2.)[valid]
             other_edges[valid] = opposite_edge[valid]
@@ -145,10 +200,8 @@ def runs(frame, pavements, box, elev):
         for points, blocker_width in blockers:
             _, _, distance = project(centres, points)
             valid &= distance > blocker_width/2.+BASE_WIDTH/2.+OPENING_CLEARANCE
-        # Do not let extract buffers extend the treatment outside Kentucky.
-        import signstates
         la, lo, _ = frame.enu_to_geodetic(centres[:, 0], centres[:, 1], 0.)
-        valid &= signstates.states(la, lo) == 'KY'
+        valid &= treatment(route, la, lo) == JERSEY
         z = _heights(frame, elev, centres)
         # Start the wall at the median ground; at sloping medians raise its top
         # to remain tall on both carriageways without floating the foundation.
@@ -178,7 +231,7 @@ def build(chunks, origin):
     profile = np.array([[-.45, -.15], [.45, -.15], [.45, .08], [.23, .36],
                         [.12, HEIGHT], [-.12, HEIGHT], [-.23, .36], [-.45, .08]])
     for chunk in chunks:
-        if not chunk.get('barrier'):
+        if not chunk.get('barrier') or chunk.get('barrier_type') == 'cable':
             continue
         line = np.asarray(chunk['n'], float)
         normals = np.asarray(chunk['cross']) if 'cross' in chunk else roadmesh._normals(line[:, :2])
@@ -208,10 +261,11 @@ def build(chunks, origin):
             for j in range(1, len(profile)-1):
                 tri = (index, index+j, index+j+1)
                 triangles.append(tri[::-1] if reverse else tri)
-    if not triangles:
-        return None
-    return (np.asarray(vertices), np.asarray(triangles), np.asarray(uvs), [MATERIAL],
-            np.zeros(len(triangles), np.int32))
+    import cablebarriers
+    import plazas
+    concrete = ((np.asarray(vertices), np.asarray(triangles), np.asarray(uvs), [MATERIAL],
+                 np.zeros(len(triangles), np.int32)) if triangles else None)
+    return plazas.merge(concrete, cablebarriers.build(chunks, origin))
 
 
 def mount(frame, obj, pavements, elev):
@@ -221,7 +275,7 @@ def mount(frame, obj, pavements, elev):
     candidates = []
     axis = np.asarray(obj['mile_marker']['axis'], float)
     for run in runs(frame, pavements, box, elev):
-        if run['route'] != obj['mile_marker']['route']:
+        if run.get('barrier_type') == 'cable' or run['route'] != obj['mile_marker']['route']:
             continue
         line = np.asarray(run['n'], float)
         nearest, travel, distance = project(q[None, :], line)

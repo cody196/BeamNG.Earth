@@ -4,6 +4,60 @@ This build combines `fix/bridge-underpass-overpass` and
 `port/road-infrastructure-1.6.3` on `integration/bridges-road-infrastructure`.
 Both original branches remain separate for their individual pull requests.
 
+## Combined v5 — I-65 cable medians and Indiana Exit 9 extension
+
+- Replaced the added Jersey median north of the US 62 bridge in the first
+  screenshot (near 37.67836, -85.84646) with four steel cables on galvanized
+  posts along the northbound median shoulder. The posts have amber reflectors.
+- Switched the cable to the southbound median shoulder at the overpass at
+  37.844624, -85.715595. Cables stop at the requested Louisville restart near
+  Exit 116 / 38.09602, -85.70071; they do not cross the median at the switch.
+- Resumed Jersey barriers and duplex blue 0.2-mile markers through Louisville
+  and into Indiana, ending at the Exit 9 overpass. Both Ohio River spans are
+  explicitly excluded. Existing bridge geometry and mapped crossover openings
+  are retained; the added median treatment remains on ground road sections.
+- Added 45 Indiana stations (0.2–9.0) using
+  [INDOT reference-post labels](https://gis.indot.in.gov/ro/rest/services/DOT/ReferencePosts/MapServer/0)
+  and connected OSM geometry. Indiana numbering is separate from Kentucky.
+  The inventory is bundled, with no new download during driving.
+- The explicit Louisville/Indiana extension includes wider paired medians and
+  can use overlapping inner shoulders while retaining clearance to travel lanes.
+  The original under-15 m rule remains elsewhere. Cable barriers use the existing
+  colliding mesh stream, with open space between their four visible cables.
+- Retained all combined v4 changes, including the single-lane Exit 76 ramp,
+  I-75 median treatment, earlier road/bridge fixes, and multiplayer features.
+
+Downloads: `BeamNG.Earth-1.6.3-beta-combined-v5.exe` and
+`BeamNG.Earth-BeamMP-Server-1.6.3-beta-combined-v5.zip`. Restart the app/game with
+v5 to refresh generated geometry; old downloads and player saves are preserved.
+
+Validation: 296 Python tests and 81 Lua assertions passed. Six cached corridor
+replays verified the start, both cable sides, switch and Jersey restart. An OSM
+geometry replay mounted 43 of 45 Indiana reference posts: mile 6.2 is on a bridge,
+and overlapping generated travel lanes near mile 4.2 leave insufficient room for
+a median wall. Those locations remain gaps. A mesh preview verified the cables
+and posts; full-route in-game driving remains unverified.
+
+## Combined v4 — I-65 southbound Exit 76 ramp
+
+- Corrected the off-ramp to KY 224 at Upton from three lanes to one. The cached
+  OSM way 16257189 has an incorrect `lanes=3` tag; a source- and location-specific
+  correction now feeds pavement width, markings, terrain and AI navigation.
+- The ramp uses the normal single-lane ramp width, 8.3 m including shoulders,
+  instead of 17.9 m. Both adjacent I-65 mainlines retain three lanes. Downloaded
+  map data is preserved, and the new build fingerprint refreshes generated caches.
+- Retained all combined v3 changes, including Kentucky median barriers and blue
+  0.2-mile markers, plus the earlier road, bridge and multiplayer changes.
+
+Downloads: `BeamNG.Earth-1.6.3-beta-combined-v4.exe` and the matching
+`BeamNG.Earth-BeamMP-Server-1.6.3-beta-combined-v4.zip`. Earlier builds and player
+saves are preserved. Fully close and restart the app/game using v4.
+
+Validation: 220 Python tests passed. A replay of 243 road features across six
+cached cells changed only the reported ramp, with all 21 checked ramp AI edges
+using one lane. Mesh, ground texture and terrain-material checks passed; in-game
+driving at this exit remains unverified.
+
 ## Combined v3 — Kentucky median barriers and blue reference signs
 
 - Added tall concrete Jersey barriers to paired I-65 and I-75 ground carriageways
@@ -73,8 +127,8 @@ actual road-tile wall. Full-route in-game appearance and driving remain unverifi
 
 ## Updating BeamMP
 
-Use `BeamNG.Earth-1.6.3-beta-combined-v2.exe` with
-`BeamNG.Earth-BeamMP-Server-1.6.3-beta-combined-v2.zip` from this build.
+Use `BeamNG.Earth-1.6.3-beta-combined-v5.exe` with
+`BeamNG.Earth-BeamMP-Server-1.6.3-beta-combined-v5.zip` from this build.
 
 1. Stop the BeamMP server and replace its plugin and client ZIP using the server
    archive. Reapply any customized plugin settings.
