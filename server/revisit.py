@@ -45,6 +45,11 @@ def code_key():
         if not _code:
             here = os.path.dirname(os.path.abspath(__file__))
             h = hashlib.sha1()
+            # Frozen modules live inside PYZ, so scanning for *.py alone gave
+            # every custom EXE the same key when its native module was unchanged.
+            # Include the build's source fingerprint as well as the native bytes.
+            import peerwork
+            h.update(b"server-code\0" + peerwork.code_id().encode("ascii"))
             for name in sorted(os.listdir(here)):
                 # Packaged Python modules live in an archive, not beside __file__.
                 # The build writes their fingerprint here; otherwise two executables
