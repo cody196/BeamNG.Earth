@@ -2487,6 +2487,17 @@ def sidewalk_stop(spec, fid, other, ofid):
     return other.width / 2
 
 
+def edge_colour(spec, side):
+    """Driver-left boundary of a one-way highway, ramp or divided carriageway.
+
+    Ramp classifications can change to primary/secondary at an interchange;
+    that must not turn their left boundary white. Two-way outer edges stay white.
+    """
+    highway = spec.cls in {'motorway', 'trunk'} or spec.link or bool(spec.median)
+    return ('line_yellow' if spec.oneway and highway and not spec.roundabout
+            and side == (spec.dir or 1) else 'line_white')
+
+
 def extras(spec, pts, lon, left_hand=False):
     """The sidewalk / gutter / marking polylines of one road: [(look dict with m / tl / p, width, pts)].
     pts: its centreline (k, 3) in the anchor frame; lon: its longitude (centre line colour). Pure."""
@@ -2565,8 +2576,7 @@ def extras(spec, pts, lon, left_hand=False):
         for side in (1, -1):
             inset = (edge_margin(spec, side) if spec.link or (cls == "motorway" and spec.oneway)
                      else max(EDGE_LINE["inset"], edge_margin(spec)))
-            color = ("line_yellow" if spec.oneway and cls in {"motorway", "trunk"}
-                     and side == (spec.dir or 1) else "line_white")
+            color = edge_colour(spec, side)
             out.append((dict(EDGE_LINE, m=color, edge_side=side), solid, offset_polyline(pts, side * (w / 2 - inset))))
     return out
 

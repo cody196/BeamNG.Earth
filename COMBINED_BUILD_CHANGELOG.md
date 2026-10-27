@@ -4,6 +4,22 @@ This build combines `fix/bridge-underpass-overpass` and
 `port/road-infrastructure-1.6.3` on `integration/bridges-road-infrastructure`.
 Both original branches remain separate for their individual pull requests.
 
+## Combined v2 — marking corrections and completeness audit
+
+- Fixed white sections in the yellow/orange driver-left boundary at left-side
+  ramp merges. The outside edge now keeps its color through the taper; lane
+  separators and the shared inner boundary of right-side ramps remain white.
+- Restored yellow left edges on one-way ramps classified as primary, secondary,
+  or tertiary roads, and on mapped divided carriageways of those classes.
+- Preserved yellow edge paint around continuous highway corners and used the
+  same color rule for lane transitions, bridges, and tunnels.
+- Audited all **133 changed files** from both source branches: **123 match a
+  branch exactly**, and **10 contain reviewed integration/marking changes**.
+  No feature files or modified Python functions were omitted. Autosave, tree
+  and grass density, signs, road infrastructure, and bridge fixes are retained.
+- Added regression cases for road classifications, both travel directions,
+  entrance/exit ramps, reversed map geometry, bridge/tunnel output, and corners.
+
 ## Included changes
 
 - Bridge junction continuity, extended approach decks, collision surfaces, and
@@ -26,8 +42,8 @@ Both original branches remain separate for their individual pull requests.
 
 ## Updating BeamMP
 
-Use `BeamNG.Earth-1.6.3-beta-combined.exe` with
-`BeamNG.Earth-BeamMP-Server-1.6.3-beta-combined.zip` from this build.
+Use `BeamNG.Earth-1.6.3-beta-combined-v2.exe` with
+`BeamNG.Earth-BeamMP-Server-1.6.3-beta-combined-v2.zip` from this build.
 
 1. Stop the BeamMP server and replace its plugin and client ZIP using the server
    archive. Reapply any customized plugin settings.
@@ -44,12 +60,12 @@ are not part of the existing saved vehicle configuration.
 
 ## Validation
 
-- 635 Python tests passed across 47 modules.
+- 679 Python tests passed, with 2 platform/tool-dependent skips, across 49 modules.
 - 5,476 Lua assertions passed across 66 test files, including server checkpoint
   persistence/restart, client restoration, guest identity, settings, and trees.
   The separate scoping check requires Unix `find` and a standalone LuaJIT binary
   and could not run in this Windows test environment.
-- Six cached Seattle road/elevation replays completed with no height mismatch at
+- The previous integration's six cached Seattle road/elevation replays completed with no height mismatch at
   shared bridge endpoints. The reported stacked crossing at
   47.57282, -122.31967 retained 6.15 m of modeled usable clearance after merging.
 - Some short or inconsistent mapped approaches still produce steep grades or
