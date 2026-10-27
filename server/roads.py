@@ -1662,7 +1662,11 @@ def _continuous_decks(lines, zs, ground_fn, crossings=(), separations=(), corrid
     terrain = np.full(len(graph), -np.inf)
     for ix, gg in zip(indices, np.split(g, np.cumsum([len(ln) for ln in lines])[:-1])):
         np.maximum.at(terrain, ix, gg)
-    required = terrain + DECK_CLEAR
+    # A short level deck can deliberately sit flush on its graded approaches.
+    # Retain its existing lift instead of adding a new five-centimetre crest;
+    # terrain and crossing requirements still remain hard lower bounds.
+    original = np.array([heights.get(n, np.inf) for n in range(len(graph))])
+    required = np.maximum(terrain, np.minimum(terrain + DECK_CLEAR, original))
     distance = _dijkstra(graph, {n: 0.0 for n in pins})
     # Preserve the usable corridor already achieved over each lower road. A grade correction
     # must not turn a low-but-passable underpass into intersecting road surfaces. Only the
