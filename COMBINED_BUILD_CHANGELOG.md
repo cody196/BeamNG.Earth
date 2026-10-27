@@ -4,6 +4,37 @@ This build combines `fix/bridge-underpass-overpass` and
 `port/road-infrastructure-1.6.3` on `integration/bridges-road-infrastructure`.
 Both original branches remain separate for their individual pull requests.
 
+## Combined v3 — Kentucky median barriers and blue reference signs
+
+- Added tall concrete Jersey barriers to paired I-65 and I-75 ground carriageways
+  in Kentucky where the paved-edge median gap is less than 15 m. The nominal wall
+  is 1.37 m tall, 0.90 m across the base and 0.24 m across the top; its base narrows
+  where necessary to fit a tight median. Mapped crossovers and ramps keep openings.
+- Added blue barrier-mounted reference panels every 0.2 route miles on eligible
+  wall sections. Each post has NORTH and SOUTH faces, an Interstate shield,
+  MILE label, whole-mile number, and a separate .0/.2/.4/.6/.8 box.
+- Bundled 1,645 calibrated reference stations: I-65 mile 0–137 and I-75 mile
+  0–191.6. Geometry follows connected OSM mainlines between existing Kentucky DOT
+  mile references; state-line tails extend the nearby calibration by at most one
+  mile. No tile resets mileage or downloads this inventory during driving.
+- Walls share the existing colliding deck stream and cache invalidation, while
+  sign panels retain the existing Highway Signs / mile-marker visibility controls.
+  Bridge structures retain the previous combined build's geometry and clearance
+  fixes; this new wall pass applies to ground carriageways, with gaps at bridges,
+  tunnels, mapped openings, wide medians, and unpaired or missing road data.
+- Retained all combined v2 features, including yellow edge corrections, bridge
+  continuity and truck clearance, OSM lanes and signs, BeamMP autosave/resume,
+  tree/grass density settings, loading improvements, and HTTPS fixes.
+
+Downloads: `BeamNG.Earth-1.6.3-beta-combined-v3.exe` and the matching
+`BeamNG.Earth-BeamMP-Server-1.6.3-beta-combined-v3.zip`. Earlier downloads and
+player saves are preserved. Restart the app/game to load the new assets.
+
+Validation includes threshold/opening/collision/seam/direction/decimal tests,
+both sign faces rendered from the actual mesh and glyph atlas, and cached I-65
+replays at miles 26, 46, 60 and 100. The mile 46 marker was checked against the
+actual road-tile wall. Full-route in-game appearance and driving remain unverified.
+
 ## Combined v2 — marking corrections and completeness audit
 
 - Fixed white sections in the yellow/orange driver-left boundary at left-side

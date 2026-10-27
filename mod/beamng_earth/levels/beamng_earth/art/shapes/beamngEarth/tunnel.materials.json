@@ -1,4 +1,24 @@
 {
+  "bne_ky_barrier_concrete": {
+    "name": "bne_ky_barrier_concrete",
+    "mapTo": "bne_ky_barrier_concrete",
+    "class": "Material",
+    "version": 1.5,
+    "Stages": [
+      {
+        "baseColorMap": "/assets/materials/tileable/concrete/concrete_plain/t_concrete_plain_b.color.png",
+        "normalMap": "/assets/materials/tileable/concrete/concrete_plain/t_concrete_plain_nm.normal.png",
+        "roughnessMap": "/assets/materials/tileable/concrete/concrete_plain/t_concrete_plain_r.data.png",
+        "ambientOcclusionMap": "/assets/materials/tileable/concrete/concrete_plain/t_concrete_plain_ao.data.png",
+        "baseColorFactor": [0.78, 0.75, 0.68, 1],
+        "roughnessFactor": 0.9,
+        "metallicFactor": 0
+      }, {}, {}, {}
+    ],
+    "groundType": "CONCRETE",
+    "castShadows": true,
+    "translucent": false
+  },
   "bne_rail_ballast": {
     "name": "bne_rail_ballast",
     "mapTo": "bne_rail_ballast",

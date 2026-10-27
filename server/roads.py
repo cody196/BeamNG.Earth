@@ -4737,7 +4737,9 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
             roads.append((fid, spec, np.stack([e[k:k + m], n[k:k + m], u[k:k + m]], axis=1),
                           float(np.mean(ring[:, 0]))))
             k += m
-    chunks = []
+    import medianbarriers
+    chunks = medianbarriers.runs(frame, [(fid, sp, pts, sp.width) for fid, sp, pts, _ in roads],
+                                 (x0, y0, x1, y1), elev) if not left_hand else []
     if cover_out is not None:
         # the ground carriageways for the decks' parapet test (roadmesh.deck ground=): drawn or painted into the ground,
         # a deck at grade across one has no parapet over its lanes (GitHub #96). With the roads in the ground there
@@ -5133,7 +5135,8 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None
     path = os.path.join(out_dir, name)
     # (from PR #41, Madderose) with a road mesh the mod makes no DecalRoads: their chunks were ~36 % of the file it
     # parses on its main thread
-    data = {"v": VERSION, "chunks": [] if road_mesh is not None else [c for c in chunks if not c.get("tube_only")]}
+    data = {"v": VERSION, "chunks": [] if road_mesh is not None else
+            [c for c in chunks if not c.get("tube_only") and not c.get("barrier")]}
     if road_mesh is not None:
         x0, y0, _, _ = tile_bbox(tx, ty)
         shape = f"road_{aid}_{tx}_{ty}.cdae"
@@ -5253,6 +5256,9 @@ def collider_boxes(walks, chunks):
         mid[:, :2] = curb[:, :2] + outv * (ww / 2)
         add("walk", mid, ww / 2 + 0.5, -1.0, 1.0)
     for c in chunks or ():
+        if c.get("barrier") and len(c["n"]) > 1:
+            add("deck", c["n"], float(c["w"])/2., -.2,
+                max(float(t)-float(p[2]) for t,p in zip(c['top'], c['n'])))
         if c.get("deck") and len(c["n"]) > 1:
             add("deck", c["n"], float(c["w"]) / 2 + 1.0, -roadmesh.DECK_DEPTH - 1.0, 2.0)
     return out
