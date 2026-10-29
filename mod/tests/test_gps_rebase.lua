@@ -93,7 +93,7 @@ G.setDestination(0, 1000, 'test destination')
 G.setAutodrive(true)
 G.onVehicleMapmgrUpdate(7)
 tick(1); tick(1); flush()
-T.check(#drives == 1 and drives[1].path[1] == 'a' and drives[1].path[2] == 'b', 'initial route joins the edge under the car')
+T.check(#drives == 1 and drives[1].path[1] == 'b' and drives[1].path[2] == 'c', 'initial route targets the road ahead, not the passed start node')
 local routeVersion = G.status().routeVersion
 local plansBefore = plans
 
@@ -147,7 +147,7 @@ runGE()
 tick(0.1); flush()
 T.check(#drives == 2 and mode == 'manual' and not G.status().autodrivePaused, 'fresh route resumes promptly after the acknowledgement')
 T.check(controls.brake == 0 and controls.parkingbrake == 0, 'resume clears fallback brakes')
-T.check(drives[2].path[1] == 'a' and drives[2].path[2] == 'b', 'resume follows the current edge forward')
+T.check(drives[2].path[1] == 'b' and drives[2].path[2] == 'c', 'resume follows the current edge forward without revisiting its start')
 T.check(G.status().name == 'test destination' and G.status().routeVersion == routeVersion, 'destination and long route survive the pause')
 
 -- Back-to-back graph updates: the acknowledgement for serial 3 arrives after GE has serial 4.

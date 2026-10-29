@@ -82,6 +82,33 @@ jn = G.joinStart({ 'j', 's' }, 'w', 'j', g2)
 T.check(#jn == 3 and jn[1] == 'w', 'the edge\'s start put in front')
 jn = G.joinStart({ 'w', 'j', 's' }, 'w', 'j', g2)
 T.check(#jn == 3, 'already starting there: unchanged')
+do -- The behind-car node describes the road edge; stock AI would drive BACK to it if sent as a target.
+  local function forward(ids, x, y, hx, hy) return G.forwardTargets(ids, g2, x, y, hx, hy) end
+  local f = forward(jn, 40, 2, 1, 0)
+  T.check(#f == 2 and f[1] == 'j' and f[2] == 's', 'activation: first AI target is the junction ahead, never the passed node')
+  T.check(#jn == 3 and jn[1] == 'w', 'retain the full road edge separately for graph validation')
+  f = forward(G.joinStart({ 's' }, 'w', 'j', g2), 40, 2, 1, 0)
+  T.check(f[1] == 'j', 'still visit the corner ahead rather than cutting across to the next road')
+  f = forward({ 'w', 'j', 's' }, 120, -20, 1, -1)
+  T.check(#f == 1 and f[1] == 's', 'refresh after the corner: drop all passed targets')
+  T.check(#forward({ 'j' }, 40, 2, 1, 0) == 1, 'one valid target ahead can be driven')
+  T.check(#forward({ 'j' }, 120, 2, 1, 0) == 0, 'one remaining target behind: do not turn around')
+  T.check(#forward({ 'w', 'j' }, 100, 0, 1, 0) == 0, 'at the last node: do not circle to collect it')
+  f = forward({ 's', 'j', 'w' }, 40, 2, -1, 0)
+  T.check(#f == 1 and f[1] == 'w', 'the same rule works when driving west')
+  T.check(#forward({ 'missing' }, 0, 0, 1, 0) == 0, 'missing waypoint: no drive target')
+  T.check(#forward(jn, 40, 0, 0, 0) == 0, 'unknown heading: no guessed backwards target')
+  local hairpin = { a = { pos = { x = 0, y = 0 } }, b = { pos = { x = 100, y = 0 } },
+    c = { pos = { x = 100, y = 100 } }, d = { pos = { x = 0, y = 100 } } }
+  f = G.forwardTargets({ 'a', 'b', 'c', 'd' }, hairpin, 40, 0, 1, 0)
+  T.check(#f == 3 and f[1] == 'b' and f[2] == 'c' and f[3] == 'd', 'retain future bends, including a later point behind the current heading')
+  f = forward({ 'j', 'w' }, 40, 2, 1, 0)
+  T.check(#f == 1 and f[1] == 'w', 'a genuine westbound route can still turn the east-facing car around')
+  T.check(#forward({ 'w', 'j' }, 200, 2, 1, 0) == 0, 'a completely passed short path never sends the car back')
+  hairpin.e, hairpin.f = { pos = { x = -100, y = 2 } }, { pos = { x = -10, y = 2 } }
+  f = G.forwardTargets({ 'a', 'b', 'c', 'd', 'e', 'f' }, hairpin, 40, 2, 1, 0)
+  T.check(#f == 5 and f[1] == 'b', 'extension of a later road must not skip the loop still ahead')
+end
 
 -- the AI's path across a road-graph change: from the edge under the car, as far as every step is an edge in both graphs
 do
@@ -100,7 +127,8 @@ end
 -- a graph update that keeps the AI's path ahead valid leaves the AI alone
 do
   local sent = {}
-  local veh = { getPosition = function() return { x = 150, y = 0 } end,
+  local veh = { getID = function() return 7 end, getPosition = function() return { x = 150, y = 0 } end,
+                getDirectionVector = function() return { x = 1, y = 0 } end,
                 queueLuaCommand = function(_, c) sent[#sent + 1] = c end }
   local keep = { ids = { 'b', 'c' }, full = 2 }
   local function n(x, links) return { pos = { x = x, y = 0 }, links = links } end
@@ -110,7 +138,10 @@ do
   G.afterGraph(keep, same)
   T.check(#sent == 0, 'still valid: no new path for the AI')
   G.afterGraph(keep, { b = n(100, {}), c = n(200, {}) })
-  T.check(#sent == 1, 'a broken step: the AI gets the part that is left')
+  T.check(#sent == 1 and sent[1]:find('disabled', 1, true) and sent[1]:find('"brake", 0.5', 1, true),
+    'a broken step leaves only a passed node: brake instead of circling in traffic mode')
+  G.setAutodrive(true) -- reset the temporary path brake for the remaining isolated tests
+  G.setAutodrive(false)
   getPlayerVehicle = saved
 end
 do -- the game's loaded graph keeps each edge on one node only (map.lua convertToSingleSided)
