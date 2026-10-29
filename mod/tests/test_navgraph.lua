@@ -92,4 +92,50 @@ do
   local _, _, _, _, _, h2 = N.aheadSpot(0, 0, 0, -30, box)
   T.check(h2 and h2 <= 256 - N.GUARD_M - 20, 'aheadSpot: south, limited by the box too')
 end
+-- Rebase readiness tracks a successful map apply, not just receipt of the server's new graph.
+do
+  N.reset()
+  local now, current, failReset = 0, { buildSerial = 10, nodes = {} }, false
+  os.clock = function() return now end
+  function readFile() return g end
+  function jsonDecode(v) return v end
+  function jsonEncode() return '{}' end
+  function writeFile() end
+  function log() end
+  path = { getPathLevelInfo = function() return '/level.json' end }
+  be = { queueAllObjectLua = function() end }
+  table.clear = function(t) for k in pairs(t) do t[k] = nil end end
+  map = {
+    getMap = function() return current end,
+    reset = function(n)
+      if failReset then error('test import failure') end
+      current = { buildSerial = current.buildSerial + 1, nodes = n }
+      N.onReloaded()
+    end,
+  }
+  T.check(N.appliedFor(1) == nil, 'no installed graph: not ready')
+  N.onMessage({ anchorId = 1, path = '/graph', serial = 1 }, 1)
+  T.check(N.appliedFor(1) == nil, 'graph merely received: not ready')
+  N.update(1, { -500, -500, 500, 500 })
+  T.check(N.appliedFor(1) == 11 and N.appliedFor(2) == nil, 'installed serial is ready only for its own anchor')
+  N.update(2, { -500, -500, 500, 500 })
+  T.check(N.appliedFor(2) == nil, 'rebase with the old map left in GE: not ready')
+  N.onMessage({ anchorId = 2, path = '/graph', serial = 2 }, 2)
+  now = 2
+  failReset = true
+  N.update(2, { -500, -500, 500, 500 })
+  T.check(N.appliedFor(2) == nil, 'failed map import cannot release autodrive')
+  failReset = false
+  now = 4
+  N.onMessage({ anchorId = 2, path = '/graph', serial = 3 }, 2)
+  N.update(2, { -500, -500, 500, 500 })
+  T.check(N.appliedFor(2) == 12, 'replacement map successfully installed: ready')
+  current.buildSerial = 13
+  T.check(N.appliedFor(2) == nil, 'a foreign map serial cannot be mistaken for our graph')
+  current.buildSerial = 12
+  N.onReloaded()
+  T.check(N.appliedFor(2) == nil, 'foreign rebuild hook invalidates readiness before its serial changes')
+  N.reset()
+  T.check(N.appliedFor(2) == nil, 'level reset forgets map readiness')
+end
 T.done('test_navgraph')

@@ -624,7 +624,8 @@ function M.update(aid, b, gov)
   local okA = apply(b, pre)
   if gov and gov.noteFrame then gov:noteFrame(sw()) end
   if okA then
-    applied = { anchor = aid, serial = graph.serial, box = b and { b[1], b[2], b[3], b[4] } or {} }
+    applied = { anchor = aid, serial = graph.serial, buildSerial = map.getMap().buildSerial,
+      box = b and { b[1], b[2], b[3], b[4] } or {} }
     if not started then
       startTraffic()
       respawnAll = false
@@ -649,6 +650,15 @@ end
 
 -- How many times a graph went into the game's map (gps.lua: the map's node table stays the same table across them).
 function M.applies() return stats.applies end
+
+-- A graph for this anchor really installed in GE, still the same map (not a foreign reset).
+-- GPS uses this to distinguish a completed rebase from the old map left behind while loading.
+function M.appliedFor(anchorId)
+  local m = map and map.getMap and map.getMap()
+  if applied and applied.anchor == anchorId and not foreign and m and m.buildSerial == applied.buildSerial then
+    return applied.buildSerial
+  end
+end
 
 function M.status()
   return { graph = graph and graph.serial or nil, applies = stats.applies, lastMs = stats.lastMs,

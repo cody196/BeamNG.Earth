@@ -358,6 +358,9 @@ frames(40)
 T.check(#received('commit_anchor') == 1, 'ready but below 10 km: no commit yet')
 
 -- cross 10 km (engine applies the move in the same frame's physics step, the expected case)
+local gps = require('beamngEarth/gps')
+gps.setDestination(0, 0, 'rebase test')
+gps.setAutodrive(true)
 veh.pos = vec3(10000, 10, 1200)
 cameraFollows()
 imports = calls.importMaps
@@ -365,7 +368,18 @@ farBefore = {}
 for _, o in ipairs(S.liveOf('TSStatic')) do farBefore[o.id] = o:getPosition() end
 local orbitOld = { orbit.camLastPos2.x, orbit.camLastPos2.y, orbit.camLastPos2.z }
 local camOld = { camData.pos.x, camData.pos.y, camData.pos.z }
+local beforePauseMoves = calls.setClusterPosRelRot
 frame()
+T.check(calls.setClusterPosRelRot == beforePauseMoves and #received('commit_anchor') == 1,
+  'autodrive: neither the car nor the world moves before the vehicle acknowledges disabled AI')
+local pauseCmd = veh.cmds[#veh.cmds]
+T.check(pauseCmd:find('onAutodriveRebasePaused', 1, true) ~= nil, 'autodrive: pause queued before the rebase')
+local pauseEnv = { ai = { setMode = function(mode) T.check(mode == 'disabled', 'autodrive: coasting, AI disabled') end },
+  obj = { queueGameEngineLua = function(_, cmd)
+    setfenv(assert(loadstring(cmd)), { beamngEarth_core = core })()
+  end } }
+setfenv(assert(loadstring(pauseCmd)), pauseEnv)()
+T.check(pumpUntil(function() return calls.setClusterPosRelRot > beforePauseMoves end, 10), 'autodrive: acknowledged pause lets the rebase commit')
 local fN = frameNo
 T.check(calls.setClusterPosRelRot > clusterMoves, 'rebase: vehicles moved')
 local a2 = geodesy.newAnchor(req2.lat, req2.lon)
@@ -426,6 +440,8 @@ for id, p in pairs(farBefore) do
 end
 T.check(calls.safeTeleport == 2, 'rebase does not reset the vehicle')
 T.check(core._rebaseLag() == 0, 'measured lag = 0 frames (same frame)')
+T.check(gps.status().autodrivePaused == 'rebase', 'autodrive: after the world moves, held until the new graph arrives')
+gps.clear()
 
 -- new anchor's far tiles, then far_done -> old tiles deleted progressively
 serverSend({ type = 'far_tile', anchorId = 1, key = 'late', shape = '/x.dae', pos = { 0, 0, 0 } }) -- stale

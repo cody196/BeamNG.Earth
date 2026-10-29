@@ -41,6 +41,8 @@ in a few minutes. No programming needed.
   it on the road. Leave the route and it is planned again. **Clear** stops it, **Teleport** jumps there,
   **Autodrive** lets the car drive the route by itself (in its lane, at the speed limit, minding traffic;
   press it again to drive yourself).
+  During an origin rebase it coasts for up to half a second, then brakes if navigation is still loading.
+  It resumes the same route once the new road map is ready. Turning Autodrive off cancels that automatic resume.
 - **Right-click** the map for **Teleport here**, **Set GPS destination** or **Save this place**.
 - The map's **Places** panel (on the right; "Places ›" hides it) lets you save where you are, type
   (or paste from Google Maps) a "latitude, longitude" and press **Go**, go to, rename or delete your

@@ -494,6 +494,7 @@ local function commitTeleport(msg)
   be:reloadCollision()
 
   st.anchor, st.anchorId, st.anchorKey = geodesy.newAnchor(msg.lat, msg.lon), msg.anchorId, msg.anchorKey
+  gps.finishRebase(st.anchor, st.anchorId) -- a teleport may supersede an autodrive rebase hold
   st.anchorSession, st.resync = st.sessionId, false
   mpanchor.announceOwn(msg.lat, msg.lon)
   st.block, st.terrainPending, st.terrainErrorAt = { cx = tr.cx, cy = tr.cy }, nil, nil
@@ -534,6 +535,7 @@ local function finishRebase()
   be:reloadCollision()
 
   st.anchor, st.anchorId, st.anchorKey = rb.newAnchor, msg.anchorId, msg.anchorKey
+  gps.finishRebase(st.anchor, st.anchorId)
   st.anchorSession, st.resync = st.sessionId, false
   mpanchor.announceOwn(st.anchor.lat, st.anchor.lon)
   st.block, st.terrainPending, st.terrainErrorAt = { cx = tr.cx, cy = tr.cy }, nil, nil
@@ -1366,6 +1368,7 @@ local function updateWorld(dt)
     end
   end
   if (action == 'commit' or action == 'resync') and st.paused then action = nil end -- vehicles move only with physics running
+  if action ~= 'commit' and action ~= 'resync' then gps.cancelRebasePreparation(st.anchor, st.anchorId) end
   if action == 'prefetch' then
     if net.isConnected() then
       local aLat, aLon, cx, cy = M._rebaseRequest(pl)
@@ -1374,7 +1377,7 @@ local function updateWorld(dt)
   elseif action == 'commit' or action == 'resync' then
     -- a heavy op: it runs once the governor has ramped streaming down (asked again every frame);
     -- terrain-follow waits meanwhile, its state belongs to the frame that is about to change
-    if gov:requestHeavy() then
+    if gov:requestHeavy() and gps.prepareRebase(p.msg.anchorId) then
       st.pending = nil
       commitAnchor(p.msg, p.purpose)
     end
@@ -1869,7 +1872,10 @@ local function onUpdate(dtReal, dtSim)
   require('beamngEarth/enginepref').update(st.inOurLevel)      -- (the settings' object detail: our level only)
   local stg = rawget(_G, 'beamngEarth_settings')
   if stg and stg.redirectBigMap then stg.redirectBigMap(st.inOurLevel) end
-  if st.inOurLevel then gps.update(st.anchor, st.player) end
+  if st.inOurLevel then
+    gps.updateRebase(dtSim or dtReal)
+    gps.update(st.anchor, st.player)
+  end
   seasonlook.update(st.inOurLevel, st.anchor and st.anchor.lat)
   t = mark('ui', t)
   local frameMs = frameMs0
@@ -2165,6 +2171,7 @@ end
 M.onFilesChanged = onFilesChanged
 
 local function onExtensionUnloaded()
+  gps.reset() -- release a rebase's fallback brake before unloading its callbacks
   hudapps.unhookCityZone()
   hudapps.unhookMinimapNorth()
   groundcover.enginePatch(false)
@@ -2525,6 +2532,8 @@ M.onClientStartMission = onClientStartMission
 M.onClientPreStartMission = onClientPreStartMission
 M.onNavgraphReloaded = function() navgraph.onReloaded() end
 M.onVehicleMapmgrUpdate = function(id) gps.onVehicleMapmgrUpdate(id) end
+M.onAutodriveRebasePaused = function(id, token) gps.onRebasePaused(id, token) end
+M.onAutodriveRebaseMap = function(id, token, serial) gps.onRebaseMap(id, token, serial) end
 M.onClientEndMission = onClientEndMission
 M.onExit = function() notePlayerPos(true) end           -- the game closing (a crash or a kill: the last periodic one)
 M.onClientPostStartMission = onClientPostStartMission

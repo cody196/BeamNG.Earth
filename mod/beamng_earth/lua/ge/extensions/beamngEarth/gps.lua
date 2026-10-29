@@ -42,6 +42,12 @@ M.AUTO_AGGRESSION = 0.3
 -- server restarts drove off the loaded world and wrecked the car, 2026-10-14) and goes on when it is back; a car
 -- damaged this much ends the autodrive.
 M.AUTO_DAMAGE = 20000
+-- A floating-origin move invalidates the AI's coordinates before its replacement map arrives.
+-- Coast briefly, then brake without asking the old navigation graph to steer the car.
+M.REBASE_COAST_S = 0.5
+M.REBASE_BRAKE_S = 1.0
+M.REBASE_ACK_S = 2.0
+M.REBASE_CHECK_S = 0.1
 
 local dest = nil        -- { lat, lon, name }
 local route = nil       -- { points = {{lat, lon}...}, dist, dur, version } | false (no route: steering) | nil (none yet)
@@ -67,6 +73,8 @@ local vehGraph = {}     -- vehicle id -> the game's map buildSerial when its map
 local pathWait = nil    -- os.clock() since a path waits for the car to have the graph it was planned on
 local targetS = nil     -- the route distance of the arrows' target
 local downloadProgress = nil   -- { total, done, active } | nil: the route's corridor prefetch (server routeahead.py)
+local rebaseHold = nil         -- vehicle, token, anchorId, anchor (after commit), age, acknowledged, mapSerial
+local rebaseToken = 0          -- never reused: late vehicle callbacks cannot release a newer hold
 
 -- Pure: the id and position {x, y, z} of the node in `nodes` (map.getMap().nodes: id -> { pos = {x, y, z} })
 -- nearest (tx, ty), and its distance; nil when there are none.
@@ -248,6 +256,7 @@ function M.status()
            remaining = info and info.remaining, eta = info and info.eta, routeVersion = route and route.version or 0,
            progress = progress, planning = pendingId ~= nil, routeError = routeError, pendingId = pendingId,
            autodrive = auto, autoNodes = autoPath and #autoPath or nil, off = info and info.off, arrows = routedTo,
+           autodrivePaused = rebaseHold and (rebaseHold.braking and 'rebase-braking' or 'rebase') or nil,
            routeDownload = downloadProgress, replans = M.noProgressReplans, recoveries = M.autoRecoveries }
 end
 
@@ -478,9 +487,75 @@ function M.vehicleHasGraph(veh)
   return vehGraph[veh:getId()] == serial
 end
 
+-- Called before core moves the vehicles. Wait for the vehicle VM to confirm that its AI is off;
+-- queueing a command alone does not establish ordering with the physics-side cluster move.
+function M.prepareRebase(anchorId)
+  if not auto then return true end
+  local veh = playerVeh()
+  if not veh or not dest then M.setAutodrive(false); return true end
+  local id = veh:getID()
+  if rebaseHold and not rebaseHold.anchor and rebaseHold.anchorId == anchorId and rebaseHold.vehicle == id then
+    return rebaseHold.acknowledged == true
+  end
+  rebaseToken = rebaseToken + 1
+  rebaseHold = { vehicle = id, token = rebaseToken, anchorId = anchorId, age = 0 }
+  autoPath, autoSerial, stillSince, pathWait, routedTo = nil, nil, nil, nil, nil
+  progRemaining, progAt, stuckTries = nil, nil, 0
+  local callback = string.format('if beamngEarth_core then beamngEarth_core.onAutodriveRebasePaused(%d,%d) end', id, rebaseToken)
+  veh:queueLuaCommand(M.aiCommand(nil) .. '; obj:queueGameEngineLua(' .. string.format('%q', callback) .. ')')
+  return false
+end
+
+function M.onRebasePaused(id, token)
+  if rebaseHold and rebaseHold.vehicle == id and rebaseHold.token == token then rebaseHold.acknowledged = true end
+end
+
+function M.finishRebase(anchor, anchorId)
+  if not rebaseHold then return end
+  rebaseHold.anchor, rebaseHold.anchorId = anchor, anchorId
+  rebaseHold.mapSerial, rebaseHold.requestedSerial = nil, nil
+  enu, targetS, routedTo, lastCheck = nil, nil, nil, -math.huge
+end
+
+-- A prepared rebase can become stale or be superseded before the vehicle moves. Rejoin the
+-- current frame's route in that case, through the same confirmed-map handoff.
+function M.cancelRebasePreparation(anchor, anchorId)
+  if rebaseHold and not rebaseHold.anchor then M.finishRebase(anchor, anchorId) end
+end
+
+-- During a rebase, require the serial actually imported by the vehicle. The stock mapmgr hook
+-- only carries a vehicle ID, so a late hook could otherwise be mistaken for a newer map.
+function M.rebaseMapCommand(id, token, serial)
+  local callback = string.format('if beamngEarth_core then beamngEarth_core.onAutodriveRebaseMap(%d,%d,%d) end', id, token, serial)
+  return string.format([[do
+local ok, m = pcall(lpack.decode, obj:getLastMailbox('mapData'))
+if ok and type(m) == 'table' and m.buildSerial == %d and m.graphData and m.edgeKdTree and m.maxRadius and m.nodeAliases then
+  mapmgr.setMap()
+  obj:queueGameEngineLua(%q)
+end
+end]], serial, callback)
+end
+
+function M.onRebaseMap(id, token, serial)
+  if rebaseHold and rebaseHold.vehicle == id and rebaseHold.token == token
+      and rebaseHold.requestedSerial == serial then
+    rebaseHold.mapSerial, vehGraph[id] = serial, serial
+  end
+end
+
+local function rebaseReady(anchor)
+  local h = rebaseHold
+  if not h or not h.acknowledged or not h.anchor or h.anchor ~= anchor then return false end
+  local ng = require('beamngEarth/navgraph')
+  local serial = ng.appliedFor(h.anchorId)
+  local c = core()
+  return serial ~= nil and h.mapSerial == serial and (not (c and c.serverHealthy) or c.serverHealthy())
+end
+
 local function driveArrowsPath(gm, nodes)
   local veh = playerVeh()
   if not veh or not gm.routePlanner then return end
+  if rebaseHold and not rebaseReady(rebaseHold.anchor) then return end
   if not M.vehicleHasGraph(veh) then
     local now = os.clock()
     if not pathWait then
@@ -502,9 +577,15 @@ local function driveArrowsPath(gm, nodes)
   end
   local p, d = veh:getPosition(), veh:getDirectionVector()
   local hl = math.sqrt(d.x * d.x + d.y * d.y)
-  if hl > 0.1 then ids = M.joinStart(ids, M.edgeUnder(nodes, p.x, p.y, d.x / hl, d.y / hl), nodes) end
+  local a, b
+  if hl > 0.1 then
+    a, b = M.edgeUnder(nodes, p.x, p.y, d.x / hl, d.y / hl)
+    ids = M.joinStart(ids, a, b, nodes)
+  end
+  if rebaseHold and (not a or ids[1] ~= a or ids[2] ~= b) then return end
   if #ids < 2 then return end
-  veh:queueLuaCommand(M.aiCommand(ids))
+  veh:queueLuaCommand((rebaseHold and (M.aiCommand(nil) .. '; ') or '') .. M.aiCommand(ids))
+  rebaseHold, paused = nil, false
   M.trace('path', ids, nodes, p)
   autoPath, autoSerial, stillSince = ids, graphSerial(), nil
 end
@@ -543,7 +624,7 @@ end
 -- The stock AI keeps its path's node ids across the map change and crashed on a step that was no longer an edge
 -- ('edgeData' nil in ai.lua planAhead: the vehicle's Lua disabled, the car stopped for good; I-70 2026-10-15).
 function M.beforeGraph(oldNodes)
-  if not auto or paused or not autoPath or not oldNodes then return nil end
+  if not auto or paused or rebaseHold or not autoPath or not oldNodes then return nil end
   local veh = playerVeh()
   if not veh then return nil end
   local p = veh:getPosition()
@@ -556,6 +637,7 @@ end
 -- before the new map reaches the vehicle; with less than two nodes left it drives the lanes on its own until the next
 -- check gives it the route again.
 function M.afterGraph(keep, newNodes)
+  if rebaseHold then return end
   local veh = playerVeh()
   if not keep or not veh or not newNodes then return end
   local ids = M.validFrom(keep.ids, 1, { newNodes })
@@ -590,7 +672,8 @@ local function setArrows(key, target, tail, nodes)
   if pcall(gm.setPath, target, { clearPathOnReachingTarget = false }) then
     routedTo, arrowsSerial = key, serial
     -- (not before the route is in: the AI would set off on its own way toward the destination)
-    if auto and route ~= nil and not paused then pcall(driveArrowsPath, gm, nodes) end    -- before the tail: the AI drives the graph part only
+    if auto and route ~= nil and (not paused or rebaseHold) then pcall(driveArrowsPath, gm, nodes) end    -- before the tail: the AI drives the graph part only
+    if rebaseHold then routedTo = nil end -- no usable path yet: retry while coasting / braking
     if tail then pcall(appendTail, gm, tail.e, tail.s, tail.z) end
     return true
   end
@@ -600,6 +683,11 @@ function M.setAutodrive(on)
   on = on and true or false
   if on == auto then return auto end
   auto = on
+  if rebaseHold then
+    local held = scenetree and scenetree.findObjectById(rebaseHold.vehicle)
+    if held then held:queueLuaCommand(M.aiCommand(nil)) end -- release fallback braking, including after a vehicle switch
+    rebaseHold = nil
+  end
   autoPath, autoSerial, stillSince, paused, pathWait = nil, nil, nil, false, nil
   progRemaining, progAt, stuckTries = nil, nil, 0
   if on then
@@ -617,6 +705,43 @@ local function damage(veh)
   local m = rawget(_G, 'map')
   local o = m and m.objects and m.objects[veh:getId()]
   return o and tonumber(o.damage) or 0
+end
+
+-- Every simulated frame, independently of the once-per-second route planner. A paused game
+-- consumes none of the coast time. No stock stop/traffic mode here: those may use stale roads.
+function M.updateRebase(dtSim)
+  local h = rebaseHold
+  if not h then return end
+  local veh = playerVeh()
+  if not veh or veh:getID() ~= h.vehicle or damage(veh) > M.AUTO_DAMAGE then M.setAutodrive(false); return end
+  h.age = h.age + math.max(0, dtSim or 0)
+  if not h.acknowledged and h.age >= M.REBASE_ACK_S then
+    M.setAutodrive(false) -- a missing vehicle callback must not block the world's rebase forever
+    if ui_message then pcall(ui_message, 'Autodrive off: could not confirm rebase pause', 6, 'beamngEarthGps') end
+    return
+  end
+  local c = core()
+  local healthy = not (c and c.serverHealthy) or c.serverHealthy()
+  if h.age > M.REBASE_COAST_S or not healthy then
+    h.braking = true
+    local brake = math.min(0.7, math.max(0, h.age - M.REBASE_COAST_S) / M.REBASE_BRAKE_S * 0.7)
+    if not healthy then brake = math.max(brake, 0.3) end
+    local v = veh:getVelocity()
+    local parked = v.x * v.x + v.y * v.y + v.z * v.z < 0.04 and 1 or 0
+    brake = math.floor(brake * 20 + 0.5) / 20
+    if h.brake ~= brake or h.parked ~= parked then
+      veh:queueLuaCommand(string.format('input.event("brake", %.2f, "FILTER_AI", nil, nil, nil, "ai"); '
+        .. 'input.event("parkingbrake", %d, "FILTER_AI", nil, nil, nil, "ai")', brake, parked))
+      h.brake, h.parked = brake, parked
+    end
+  end
+  if h.anchor and h.acknowledged then
+    local serial = require('beamngEarth/navgraph').appliedFor(h.anchorId)
+    if serial and h.mapSerial ~= serial and (h.requestedSerial ~= serial or h.age - (h.requestedAt or 0) >= 1) then
+      h.requestedSerial, h.requestedAt = serial, h.age
+      veh:queueLuaCommand(M.rebaseMapCommand(h.vehicle, h.token, serial))
+    end
+  end
 end
 
 -- Autodrive kept going: the path given again when the graph was applied anew or the car stands still; paused while the
@@ -678,8 +803,9 @@ end
 -- Every frame (anchor: the current geodesy anchor; player: {x, y, lat, lon}): the route kept to the destination.
 function M.update(anchor, player)
   if not dest or not anchor or not player then return end
+  if rebaseHold and not rebaseReady(anchor) then return end
   local now = os.clock()
-  if now - lastCheck < M.CHECK_S then return end
+  if now - lastCheck < (rebaseHold and M.REBASE_CHECK_S or M.CHECK_S) then return end
   lastCheck = now
   -- the planned route: asked once (and on re-routes), taken when it arrives
   if pendingId then
@@ -713,7 +839,7 @@ function M.update(anchor, player)
   end
   local m = rawget(_G, 'map') and map.getMap and map.getMap()
   local nodes = m and m.nodes
-  autoKeep(nodes, now)
+  if not rebaseHold then autoKeep(nodes, now) end
 
   if route then
     local e = toEnu(anchor)
@@ -729,7 +855,7 @@ function M.update(anchor, player)
     local remaining = e.cum[n] - (e.cum[i] + t * (e.cum[i + 1] - e.cum[i]))
     info.remaining = remaining + off
     info.off = off
-    if auto and not paused then
+    if auto and not paused and not rebaseHold then
       if not progRemaining or info.remaining < progRemaining - M.AUTO_PROGRESS_M then
         if progRemaining then stuckTries = 0 end
         progRemaining, progAt = info.remaining, now
@@ -770,6 +896,7 @@ end
 
 -- The level ended: the arrows went with it (the destination and its route stay for the next level start).
 function M.reset()
+  if rebaseHold then M.setAutodrive(false) end
   routedTo, info, lastCheck, enu, progress, progressS = nil, nil, -math.huge, nil, 1, nil
 end
 
