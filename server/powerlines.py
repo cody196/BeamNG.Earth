@@ -124,29 +124,40 @@ def _off_roads(frame, md, e, n, ll):
     import gasstations
     import mapcells
     e, n = e.copy(), n.copy()
-    layers = {}
+    layers, cells, segments = {}, {}, {}
 
     def roads_of(key):
         got = layers.get(key)
         if got is None:
             got = []
             for k in [key] + key.neighbours():
-                try:
-                    got.append(md.cell(k, layers=("roads",), kind="demand").layers.get("roads"))
-                except Exception:       # (a cell not at hand: the vertex stays where it is mapped)
-                    got.append(None)
+                if k not in cells:
+                    try:
+                        cells[k] = md.cell(k, layers=("roads",), kind="demand").layers.get("roads")
+                    except Exception:       # (a cell not at hand: the vertex stays where it is mapped)
+                        cells[k] = None
+                got.append(cells[k])
             layers[key] = got
         return got
     for i in range(len(e)):
         lines = gasstations.drive_lines(frame, roads_of(mapcells.cell_of(float(ll[i, 1]), float(ll[i, 0]))),
                                         float(e[i]), float(n[i]), 30.0)
+        prepared = []
+        for line, hw in lines:
+            # drive_lines returns views of a cell's geometry. Retain each view
+            # while caching its segment vectors: adjacent pylons often inspect
+            # the same densely sampled carriageway, up to three times apiece.
+            key = (line.__array_interface__['data'][0], line.shape, line.strides)
+            if key not in segments:
+                ab = line[1:] - line[:-1]
+                segments[key] = (line, ab, np.maximum((ab * ab).sum(1), 1e-12))
+            line, ab, length2 = segments[key]
+            prepared.append((line[:-1], ab, length2, hw))
         for _ in range(3):
             moved = False
             p = np.array([e[i], n[i]])
-            for line, hw in lines:
-                a, b = line[:-1], line[1:]
-                ab = b - a
-                t = np.clip(((p - a) * ab).sum(1) / np.maximum((ab * ab).sum(1), 1e-12), 0.0, 1.0)
+            for a, ab, length2, hw in prepared:
+                t = np.clip(((p - a) * ab).sum(1) / length2, 0.0, 1.0)
                 foot = a + t[:, None] * ab
                 d = np.hypot(*(p - foot).T)
                 k = int(np.argmin(d))

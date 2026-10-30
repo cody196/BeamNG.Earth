@@ -148,6 +148,30 @@ if __name__ == "__main__":
 class OffRoadsTest(unittest.TestCase):
     """TGForever Discord 2026-10-28: a pylon on a highway's shoulder (its mapped tower node a few metres off)."""
 
+    def test_neighbouring_towers_read_each_road_cell_once(self):
+        from collections import Counter
+        from types import SimpleNamespace
+        from unittest import mock
+        import gasstations
+        import geodesy
+        import mapcells
+        frame = geodesy.EnuFrame(44.3, -84.4)
+        key = mapcells.cell_of(44.3, -84.4)
+        other = key.neighbours()[0]
+        points = [key.center(), other.center(), key.center()]
+        ll = np.array([[lo, la] for la, lo in points])
+        e, n, _ = frame.geodetic_to_enu(ll[:, 1], ll[:, 0], 0.)
+        reads = Counter()
+        def cell(k, **kw):
+            reads[k] += 1
+            return SimpleNamespace(layers={'roads': None})
+        with mock.patch.object(gasstations, 'drive_lines', return_value=[]):
+            got = powerlines._off_roads(frame, SimpleNamespace(cell=cell), e, n, ll)
+        self.assertTrue(reads)
+        self.assertEqual(max(reads.values()), 1)
+        np.testing.assert_array_equal(got[0], e)
+        np.testing.assert_array_equal(got[1], n)
+
     def test_tower_moved_off_the_carriageway(self):
         import gasstations
         import geodesy

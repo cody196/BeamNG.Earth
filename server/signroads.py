@@ -19,7 +19,7 @@ import railtags
 import roads
 import signcontext
 
-Spec = namedtuple('SignRoad', 'width cls oneway dir link', defaults=(False,))
+Spec = namedtuple('SignRoad', 'width cls oneway dir link road_spec', defaults=(False, None))
 NEIGHBOURHOODS = 64             # combined rows kept (Context._hoods)
 CELL_FRAMES = 4                 # anchors a cell keeps rows for
 
@@ -64,7 +64,7 @@ def cell_specs(feats, urban=None, widths=None, left_hand=False):
 
 
 def spec(value, link=False):
-    return Spec(value.width, value.cls, value.oneway, value.dir, link)
+    return Spec(value.width, value.cls, value.oneway, value.dir, link, value)
 
 
 def cross(points):

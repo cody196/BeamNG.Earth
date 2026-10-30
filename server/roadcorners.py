@@ -348,6 +348,7 @@ def tile(rows, box, draw_pavement, country=None, left_hand=False, rings=(), no_d
         if allp[:, 0].max() < x0 or allp[:, 0].min() > x1 or allp[:, 1].max() < y0 or allp[:, 1].min() > y1:
             continue
         specs = [by_id[fid] for fid, _ in sides]
+        st = markings.style(country, float(np.mean([r[3] for r in rows])), specs[0].state)
         mid = arc[len(arc) // 2]
         if draw_pavement and ex0 <= mid[0] < ex1 and ey0 <= mid[1] < ey1:
             look = roads._corner_look(mid, rows)

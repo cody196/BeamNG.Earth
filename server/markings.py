@@ -61,7 +61,7 @@ YELLOW_CENTRE = {"MX", "GT", "BZ", "HN", "SV", "NI", "CR", "PA", "CU", "DO", "HT
                  "EC", "PE", "BO", "CL", "AR", "UY", "PY", "BR", "GY", "SR", "NO", "FI", "KR", "CN", "TW", "TH"}
 
 
-def style(country=None, lon=None):
+def _country_style(country=None, lon=None):
     """The marking Style of a country (ISO 3166-1 alpha-2); unknown: by longitude (the Americas yellow, else white)."""
     c = str(country or "").upper()
     if c in STYLES:
@@ -71,6 +71,19 @@ def style(country=None, lon=None):
     if not c and lon is not None and -170.0 <= float(lon) <= -30.0:
         return _US
     return _WHITE
+
+
+def style(country=None, lon=None, state=''):
+    """Country colours/rules, with the project's US paint dimensions."""
+    import roadmarkings
+    st = _country_style(country, lon)
+    profile = roadmarkings.for_road(country, lon, state)
+    if profile is None:
+        return st
+    pat = profile.travel[:2]
+    return st._replace(w=profile.solid, w_motorway=profile.solid, edge=profile.solid,
+                       edge_motorway=profile.solid, centre_rural=pat, centre_urban=pat,
+                       lane_rural=pat, lane_urban=pat, lane_motorway=pat)
 
 
 def dashes(pts, pattern, phase=0.0):
@@ -86,11 +99,8 @@ def dashes(pts, pattern, phase=0.0):
 
 
 def _count(v):
-    try:
-        n = int(str(v).split(";")[0].strip())
-        return n if 0 <= n <= 12 else None
-    except (TypeError, ValueError):
-        return None
+    import roadlanes
+    return roadlanes.count(v, 0)
 
 
 def _vals(v):
@@ -114,8 +124,6 @@ def lane_plan(osm, two_way, drive, lanes, left_hand=False):
     osm = {k: v for k, v in (osm or {}).items() if v not in (None, "")}
     if not osm:
         return None
-    fwd, bwd, both = _count(osm.get("lanes:forward")), _count(osm.get("lanes:backward")), \
-        _count(osm.get("lanes:both_ways")) or 0
     if not two_way:
         n = lanes
         ch = _vals(osm.get("change:lanes"))
@@ -127,17 +135,10 @@ def lane_plan(osm, two_way, drive, lanes, left_hand=False):
             # positive: the leftmost lane starts at +drive/2)
             out.append((drive / 2 - k * lw, "lane", solid))
         return out
-    if fwd is None and bwd is None:
-        if lanes and lanes - both >= 2:
-            fwd = bwd = None
-            half = (lanes - both) / 2
-            fwd, bwd = int(round(half + 0.25)), int(lanes - both - int(round(half + 0.25)))
-        else:
-            return None
-    if fwd is None:
-        fwd = max(1, (lanes or 2) - both - bwd)
-    if bwd is None:
-        bwd = max(1, (lanes or 2) - both - fwd)
+    if lanes < 2:
+        return None
+    import roadlanes
+    fwd, bwd, both = roadlanes.directions(lanes, osm)
     n = fwd + bwd + both
     lw = drive / max(n, 1)
     # right-hand traffic: the backward lanes on the left of the way's direction (offsets positive), then the turn lane,

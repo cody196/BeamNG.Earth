@@ -19,6 +19,7 @@ import mapgeom
 import revisit
 import roadmesh
 import roads
+import roadcurves
 
 LAT, LON = 41.10022, -105.06194
 NEAR_DEG = 2e-5     # ~2 m
@@ -36,7 +37,7 @@ class OttoBridgeTest(TestCase):
         with np.load(Path(__file__).parent / "fixtures" / "otto_wyoming.npz", allow_pickle=False) as archive:
             cls.data = {k: archive[k] for k in archive.files}
         cls.frame = geodesy.EnuFrame(LAT, LON)
-        cells = {str(key): mapgeom.Features.from_arrays("roads", cls.data, f"cell{i}.")
+        cells = {str(key): roadcurves.prepare(mapgeom.Features.from_arrays("roads", cls.data, f"cell{i}."))
                  for i, key in enumerate(cls.data["cells"])}
         origin = cls.data["sample_origin"]
         samples = {tuple(k.astype(np.int64) + origin): float(z)
@@ -44,6 +45,29 @@ class OttoBridgeTest(TestCase):
 
         skeys = np.array(list(samples), np.int64)
         svals = np.array(list(samples.values()), np.float64)
+        # Spatial blocks preserve the exact Chebyshev nearest-sample lookup, while
+        # avoiding a scan of the larger restored fixture for every new query.
+        buckets = skeys[:, :2] // 1000000
+        order = np.lexsort((buckets[:, 1], buckets[:, 0]))
+        boundaries = np.r_[0, np.flatnonzero(np.any(np.diff(buckets[order], axis=0), axis=1)) + 1, len(order)]
+        groups = [np.sort(order[a:b]) for a, b in zip(boundaries[:-1], boundaries[1:])]
+        lower = np.array([skeys[g, :2].min(0) for g in groups])
+        upper = np.array([skeys[g, :2].max(0) for g in groups])
+        nearest = {}
+
+        def closest(k):
+            bounds = np.maximum(np.maximum(lower-k[:2], k[:2]-upper), 0).max(1)
+            best, index = np.inf, len(skeys)
+            for group in np.argsort(bounds):
+                if bounds[group] > best:
+                    break
+                candidates = groups[group]
+                distances = np.abs(skeys[candidates, :2]-k[:2]).max(1)
+                i = int(distances.argmin())
+                distance, candidate = distances[i], candidates[i]
+                if distance < best or distance == best and candidate < index:
+                    best, index = distance, candidate
+            return best, index
 
         def sample(la, lo):
             a, b = np.broadcast_arrays(la, lo)
@@ -57,13 +81,15 @@ class OttoBridgeTest(TestCase):
             for k in keys:
                 z = samples.get(tuple(k))
                 if z is None:
-                    d = np.abs(skeys[:, :2] - k[:2]).max(1)
-                    n = int(np.argmin(d))
-                    far = max(abs(k[0] / 1e9 - LAT) * 111320.0,
-                              abs(k[1] / 1e9 - LON) * 111320.0 * np.cos(np.radians(LAT))) > FAR_M
-                    if d[n] > NEAR_DEG * 1e9 and not far:
-                        raise KeyError(tuple(k))
-                    z = svals[n]
+                    key = tuple(k)
+                    z = nearest.get(key)
+                    if z is None:
+                        distance, n = closest(k)
+                        far = max(abs(k[0] / 1e9 - LAT) * 111320.0,
+                                  abs(k[1] / 1e9 - LON) * 111320.0 * np.cos(np.radians(LAT))) > FAR_M
+                        if distance > NEAR_DEG * 1e9 and not far:
+                            raise KeyError(key)
+                        z = nearest[key] = svals[n]
                 out.append(z)
             return np.array(out).reshape(a.shape)
 
@@ -99,7 +125,9 @@ class OttoBridgeTest(TestCase):
             # Fixed before/after reference: the motorway approaches are not lifted.
             # (1 cm: the banking's joined-road context, PR #410, moves the far approach point by ~5 mm)
             np.testing.assert_allclose(approach, self.data[f"approach{i}.z"], atol=0.01, rtol=0)
-            np.testing.assert_allclose(z[[0, -1]], approach[[0, 5]], atol=1e-6, rtol=0)
+            # Curved arc lengths move the interpolation by micrometres (1.7.0's
+            # 0.02 mm endpoint tolerance); the height reference above is unchanged.
+            np.testing.assert_allclose(z[[0, -1]], approach[[0, 5]], atol=2e-5, rtol=0)
             entering = (approach[0] - approach[1]) / 4.0
             leaving = (approach[6] - approach[5]) / 4.0
             self.assertLess(abs(slopes[0] - entering), 0.015)

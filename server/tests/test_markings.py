@@ -60,7 +60,7 @@ class LanePlanTest(unittest.TestCase):
         lk = [(lk.get("kind"), round(float(ln[0][1]), 2)) for lk, w, ln in
               roads.extras(sp, line, -76.0, country="US", osm={"lanes:forward": "1", "lanes:backward": "1",
                                                                 "overtaking": "no"}) if lk.get("kind") == "centre"]
-        self.assertEqual(sorted(set(lk)), [("centre", -0.12), ("centre", 0.12)], "a double solid yellow line")
+        self.assertEqual(sorted(set(lk)), [("centre", -0.23), ("centre", 0.23)], "a double solid yellow line")
 
 
 class AiLanesTest(unittest.TestCase):

@@ -15,7 +15,9 @@ Records (server/signshards.py: the z7 shard of each record's point, paths delta-
   - "through": overhead destination stations along directed mainlines with destination tags
     (throughsigns.index_records, every SPACING_M of an equally labelled chain);
   - "mile": Interstate mile references (milemarkers.osm_records): mapped highway=milestone nodes on an Interstate
-    carriageway (US:I route relations or an "I nn" ref) and the whole miles between two compatible ones.
+    carriageway (US:I route relations or an "I nn" ref) and the whole miles between two compatible ones;
+  - "shield": Interstate / US reassurance shields and direction plaques (routeindex.index_records), spaced over
+    connected routes, including primary, secondary and tertiary US highways identified by route relations.
 Two passes over the planet (as build_rail_tags.py): the junction / milestone nodes, the motorway and trunk ways and
 links (their node ids kept) and the route=road relations first, then those nodes' places. Exits are indexed per z7
 tile of their junction with the mainline ways within MARGIN_DEG (an approach is 1.8 km): a planet's whole motorway
@@ -39,6 +41,7 @@ sys.path.insert(1, os.path.join(os.path.dirname(HERE), "server"))   # (the repo;
 import exitsigns  # noqa: E402
 import milemarkers  # noqa: E402
 import signshards  # noqa: E402
+import routeindex  # noqa: E402
 import throughsigns  # noqa: E402
 
 WAY_KEYS = tuple(dict.fromkeys(throughsigns.WAY_KEYS + milemarkers.WAY_KEYS))
@@ -65,18 +68,19 @@ def _rail():
     return build_rail_tags
 
 
-def first_pass(src):
+def first_pass(src, include_shields=False):
     """(main ways, links [(id, node refs, tags)], junction node tags {id: tags}, milestones {id: (lon, lat, tags)},
     relations {way id: [{direction, role}]}, route ways [(way id, route, direction, state)])."""
     with _rail()._Source(src) as f:
-        return _first_pass(f)
+        return _first_pass(f, include_shields)
 
 
-def _first_pass(src):
+def _first_pass(src, include_shields=False):
     import osmium
     main, links, junctions, milestones = [], [], {}, {}
     relations, route_rows, cache = defaultdict(list), [], {}
     main_ids = set()
+    shield_ways, shield_relations, shield_ids = [], defaultdict(list), set()
     t0, k = time.time(), 0
     fp = osmium.FileProcessor(src, osmium.osm.NODE | osmium.osm.WAY | osmium.osm.RELATION)
     for o in fp.with_filter(osmium.filter.KeyFilter("highway", "route")):
@@ -96,6 +100,10 @@ def _first_pass(src):
                 milestones[o.id] = (o.location.lon, o.location.lat, t)
         elif o.is_way():
             hw = tags.get("highway")
+            if include_shields and hw in routeindex.ROAD_CLASSES and len(o.nodes) >= 2:
+                shield_ways.append((o.id, np.array([n.ref for n in o.nodes], np.int64),
+                                   _intern(cache, {key: tags[key] for key in routeindex.WAY_KEYS if key in tags})))
+                shield_ids.add(o.id)
             if hw not in MAIN and hw not in LINKS or len(o.nodes) < 2:
                 continue
             row = (o.id, np.array([n.ref for n in o.nodes], np.int64),
@@ -113,6 +121,10 @@ def _first_pass(src):
             state = tags.get("is_in:state", "")
             interstate = tags.get("network") == "US:I" and re.fullmatch(r"\d{1,3}", ref)
             for m in o.members:
+                if (include_shields and m.type == 'w' and m.ref in shield_ids
+                        and tags.get('network') in ('US:I', 'US:US') and re.fullmatch(r'\d{1,3}', ref)):
+                    shield_relations[m.ref].append(dict(network=tags.get('network', ''), ref=ref,
+                                                        direction=tags.get('direction', ''), role=m.role))
                 if m.type != "w" or m.ref not in main_ids:
                     continue
                 posted = throughsigns.cardinal(m.role) or throughsigns.cardinal(tags.get("direction"))
@@ -120,7 +132,11 @@ def _first_pass(src):
                     relations[m.ref].append({"direction": posted, "role": m.role})
                 if interstate:
                     route_rows.append((m.ref, int(ref), direction, state))
-    return main, links, junctions, milestones, dict(relations), route_rows
+    result = (main, links, junctions, milestones, dict(relations), route_rows)
+    if include_shields:
+        shield_ways = [row for row in shield_ways if routeindex.route_refs(row[2], shield_relations.get(row[0], ()))]
+        return result + (shield_ways, dict(shield_relations))
+    return result
 
 
 class Places:
@@ -258,6 +274,15 @@ def through(main, found, relations, places):
     return [_record("through", o["id"], o["lon"], o["lat"], o["ways"][0]) for o in rows]
 
 
+def shields(ways, relations, places):
+    """Reassurance shields along connected numbered routes (including primary US highways)."""
+    if not ways:
+        return []
+    coords = places.coords(np.concatenate([r for _, r, _ in ways]))
+    found = routeindex.index_records([(wid, r.tolist(), tags) for wid, r, tags in ways], coords, relations)
+    return [_record('shield', o['id'], o['lon'], o['lat'], o['ways'][0]) for o in found]
+
+
 def miles(main, milestones, route_rows, places):
     """milemarkers.osm_records one Interstate at a time, with the milestones near its ways."""
     by_way = defaultdict(set)
@@ -325,11 +350,11 @@ def main():
     ap.add_argument("--second-pass", help="the planet again for the second pass (a path, or '-' stdin: streaming)")
     a = ap.parse_args()
     t0 = time.time()
-    main_ways, links, junctions, milestones, relations, route_rows = first_pass(a.planet)
+    main_ways, links, junctions, milestones, relations, route_rows, shield_ways, shield_relations = first_pass(a.planet, True)
     print(f"pass 1: {len(main_ways):,} mainline ways, {len(links):,} links, {len(junctions):,} junctions, "
           f"{len(milestones):,} milestones, {len(route_rows):,} Interstate members, {time.time() - t0:.0f} s",
           flush=True)
-    ids = (np.unique(np.concatenate([r for _, r, _ in main_ways + links])) if main_ways or links
+    ids = (np.unique(np.concatenate([r for _, r, _ in main_ways + links + shield_ways])) if main_ways or links or shield_ways
            else np.zeros(0, np.int64))
     places = Places(*_rail().second_pass(a.second_pass or a.planet, ids))
     print(f"pass 2: {len(places.nid):,} node places, {time.time() - t0:.0f} s", flush=True)
@@ -339,8 +364,9 @@ def main():
     print(f"overhead stations: {len(over):,}, {time.time() - t0:.0f} s", flush=True)
     mile = miles(main_ways, milestones, route_rows, places)
     print(f"mile references: {len(mile):,}, {time.time() - t0:.0f} s", flush=True)
-    write(a.out, exit_records(found) + over + mile,
-          {"exits": len(found), "through": len(over), "miles": len(mile)})
+    shield = shields(shield_ways, shield_relations, places)
+    write(a.out, exit_records(found) + over + mile + shield,
+          {"exits": len(found), "through": len(over), "miles": len(mile), "shields": len(shield)})
     print(f"done in {time.time() - t0:.0f} s")
 
 

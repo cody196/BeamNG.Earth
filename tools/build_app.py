@@ -137,6 +137,9 @@ BOOT_SHIM = ("import sys\n"
 
 def pyinstaller(work, ico, onefile, ver=None, boot=None):
     server = os.path.join(ROOT, "server")
+    bundled_version = os.path.join(work, "VERSION")
+    with open(bundled_version, "w", encoding="utf-8") as f:
+        f.write((ver or version()) + "\n")
     mods = sorted(os.path.splitext(os.path.basename(p))[0] for p in glob.glob(os.path.join(server, "*.py")))
     cmd = [sys.executable] + (["-c", BOOT_SHIM, boot] if boot else ["-m", "PyInstaller"])
     cmd += ["--noconfirm", "--clean", "--console", "--noupx", "--name", NAME,
@@ -146,7 +149,7 @@ def pyinstaller(work, ico, onefile, ver=None, boot=None):
            "--hidden-import", "certifi", "--collect-data", "certifi",   # CA bundle fallback (launcher.ensure_ca_certs)
            "--hidden-import", "truststore",     # Windows: the native certificate store (netfetch.windows_ssl_context, PR #371)
            "--add-data", f"{os.path.join(ROOT, 'mod', 'beamng_earth')}{SEP}mod/beamng_earth",
-           "--add-data", f"{os.path.join(ROOT, 'VERSION')}{SEP}.",
+           "--add-data", f"{bundled_version}{SEP}.",
            "--add-data", f"{os.path.join(server, 'bridges_us.npz')}{SEP}.",     # (bridgetypes.DB_PATH: beside the modules)
            "--add-data", f"{os.path.join(server, 'bridges_wd.npz')}{SEP}.",     # (bridgetypes.WD_PATH)
            "--add-data", f"{os.path.join(server, 'koppen_1991_2020_0p1.png')}{SEP}.",  # (climate.PATH)
@@ -160,7 +163,9 @@ def pyinstaller(work, ico, onefile, ver=None, boot=None):
            "--add-data", f"{os.path.join(server, 'usgs3dep_index.json.gz')}{SEP}.",     # (roadz.LIDAR_INDEX_PATH)
            # the highway signs' lettering metrics and US state outlines (exitsigns.GLYPHS, signstates.DATA)
            "--add-data", f"{os.path.join(server, 'sign_glyphs.json')}{SEP}.",
-           "--add-data", f"{os.path.join(server, 'sign_states.geojson')}{SEP}."]
+           "--add-data", f"{os.path.join(server, 'sign_states.geojson')}{SEP}.",
+           "--add-data", f"{os.path.join(server, 'mile_markers_us.json')}{SEP}.",
+           "--add-data", f"{os.path.join(server, 'ky_interstate_medians.json')}{SEP}."]
     # the sources' fingerprint (peerwork.code_id: compute-sharing helpers build only for the same code)
     sys.path.insert(0, server)
     import peerwork
@@ -208,6 +213,7 @@ def main():
     ap.add_argument("--appimagetool", default=shutil.which("appimagetool") or "appimagetool",
                     help="Linux: the appimagetool executable (or its .AppImage)")
     ap.add_argument("--out", default=os.path.join(ROOT, "dist"))
+    ap.add_argument("--version", help="Build label for the filename, app and Windows metadata; leaves VERSION unchanged")
     ap.add_argument("--stock-bootloader", action="store_true",
                     help="Windows: PyInstaller's prebuilt bootloader even when tools/build_bootloader.py made one")
     ap.add_argument("--require-own-bootloader", action="store_true",
@@ -218,7 +224,7 @@ def main():
     os.makedirs(work, exist_ok=True)
     os.makedirs(a.out, exist_ok=True)
     png, ico = make_icons(work)
-    ver = version()
+    ver = a.version or version()
     if IS_WIN:
         boot = None if a.stock_bootloader else own_bootloader()
         if boot:
@@ -232,7 +238,7 @@ def main():
         out = os.path.join(a.out, f"{NAME}-{ver}.exe")
         shutil.copyfile(os.path.join(dist, NAME + ".exe"), out)
     else:
-        dist = pyinstaller(work, ico, onefile=False)
+        dist = pyinstaller(work, ico, onefile=False, ver=ver)
         out = os.path.join(a.out, f"{NAME}-{ver}-x86_64.AppImage")
         appimage(dist, png, out, a.appimagetool)
     print(f"built {out} ({os.path.getsize(out) / 1e6:.0f} MB)")

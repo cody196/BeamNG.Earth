@@ -82,3 +82,34 @@ class WindowsSplitTest(unittest.TestCase):
     def test_mask(self):
         self.assertEqual(cpupin._mask({8, 9, 10, 11}), 0xF00)
         self.assertEqual(cpupin._bits(0xF00), [8, 9, 10, 11])
+
+
+class HybridSplitTest(unittest.TestCase):
+    def setUp(self):
+        self.cores = cpupin.cores_from_masks([3 << (2*i) for i in range(8)] + [1 << i for i in range(16, 20)], None)
+        self.classes = {i: int(i < 16) for i in range(20)}
+
+    def test_proportional_split_keeps_siblings_and_game_fast_cores(self):
+        selected = cpupin.select_server_cores(self.cores, 3, self.classes)
+        self.assertEqual([cpus for _, cpus in selected], [[19], [12, 13], [14, 15]])
+        with mock.patch.object(cpupin, 'WIN', True), mock.patch.object(cpupin, '_siblings', return_value=self.cores), \
+                mock.patch.object(cpupin, '_win_efficiency_classes', return_value=self.classes), \
+                mock.patch.dict(os.environ, {'BNGE_SERVER_CORES': ''}):
+            server, game = cpupin.split()
+        self.assertEqual(server, {12, 13, 14, 15, 19})
+        self.assertFalse(server & game)
+        self.assertEqual(server | game, set(range(20)))
+        self.assertTrue(set(range(12)) <= game)
+
+    def test_one_core_setting_gets_a_fast_core(self):
+        self.assertEqual(cpupin.select_server_cores(self.cores, 1, self.classes)[0][1], [14, 15])
+
+    def test_missing_or_uniform_topology_keeps_existing_policy(self):
+        for classes in ({}, {0: 1}, {i: 0 for i in range(20)}):
+            self.assertEqual(cpupin.select_server_cores(self.cores, 3, classes), self.cores[-3:])
+
+    def test_restricted_affinity_never_adds_unavailable_cpus(self):
+        limited = cpupin.cores_from_masks([3 << (2*i) for i in range(8)] + [1 << i for i in range(16, 20)],
+                                        {0, 1, 2, 3, 16, 17})
+        chosen = cpupin.select_server_cores(limited, 1, self.classes)
+        self.assertEqual(chosen[0][1], [2, 3])

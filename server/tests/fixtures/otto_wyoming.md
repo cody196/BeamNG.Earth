@@ -33,3 +33,16 @@ Before correction, usable crossing-corridor headroom was 4.35 / 4.73 m;
 the capped clearance floor produced 6% bridge grades and grade reversals
 of 10.25 / 6.29 percentage points. This fixture exercises the short-span
 and connected-underpass conditions absent from the synthetic long-span tests.
+
+For the 1.7.2-beta customization migration (2026-10-30), 487,295 additional
+captured input samples were restored from the existing 1.7.0-modified copy's
+fixture. Samples shared by both archives agree exactly. Every original cell,
+tag, input sample, approach reference, lower-road point and clearance footprint
+is retained unchanged. Only sample_keys/sample_z were extended.
+
+The replay prepares the same bounded road curves as MapData before planning.
+Its nearest-recorded-sample fallback and distance limits remain unchanged;
+spatial blocks accelerate the exact nearest lookup over the larger archive.
+The endpoint comparison retains the custom 1.7.0 tolerance of 0.02 mm, allowing
+micrometre arc-length interpolation differences. The original approach-height,
+clearance, grade and junction-continuity limits are retained.

@@ -1333,6 +1333,12 @@ def roads_geo(aid, lat, lon, zoom, gx, gy, gzoom, out_dir, vfs_dir, sidewalks, l
             out["exact"] = _geo_exact(aid, lat, lon, gx, gy, out_dir, vfs_dir, exact)
         out["time"] = {"content_s": t1 - t0, "content_cpu": c1 - c0, "skin_s": t2 - t1, "skin_cpu": c2 - c1,
                        "exact_s": time.perf_counter() - t2}
+        elapsed = time.perf_counter() - t0
+        if elapsed >= 5.0:
+            slow = sorted(((f"{part}.{stage}", seconds) for part, stages in out["stages"].items()
+                           for stage, seconds in stages.items()), key=lambda item: item[1], reverse=True)[:5]
+            log.info("road geotile %s_%s ready in %.2f s (CPU %.2f s); %s", gx, gy, elapsed,
+                     time.process_time() - c0, " ".join(f"{name}={seconds:.2f}s" for name, seconds in slow))
         return out
     finally:
         watch.cancel()

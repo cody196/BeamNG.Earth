@@ -31,7 +31,14 @@ def tee(cls="tertiary"):
 
 
 def curved(chunks, m="line_white"):
-    return [c for c in chunks if c["m"] == m and len(c["n"]) > 10]
+    def bends(nodes):
+        p = np.asarray(nodes)[:, :2]
+        if len(p) < 3:
+            return False
+        chord = p[-1] - p[0]
+        delta = p[1:-1] - p[0]
+        return np.max(np.abs(delta[:, 0]*chord[1] - delta[:, 1]*chord[0])) / max(np.linalg.norm(chord), 1e-9) > .05
+    return [c for c in chunks if c["m"] == m and bends(c["n"])]
 
 
 class PavementCornerTest(unittest.TestCase):
@@ -82,7 +89,10 @@ class PavementCornerTest(unittest.TestCase):
     def test_corner_grading_holds_the_new_pavement_on_a_hillside(self):
         # a road with a narrow flat shoulder (grading.shoulder: a motorway's ramp terminal, an expressway) meets a
         # secondary: its 12 m corners' fans reach past the roads' graded ground
-        f = features([[(-100, 0), (0, 0), (100, 0)], [(0, -100), (0, 0), (0, 100)]], ["motorway", "secondary"])
+        # Keep this grading fixture's original 13 m carriageway explicit: lane defaults must not change the
+        # geometry whose corner blending is measured here.
+        f = features([[(-100, 0), (0, 0), (100, 0)], [(0, -100), (0, 0), (0, 100)]],
+                     ["motorway", "secondary"], widths=[(0, 13.0)])
         _, rows, corners = roadcorners.source([f], frame=FRAME)
         rows = [(fid, sp, np.c_[p[:, :2], np.full(len(p), 10.0)], lon) for fid, sp, p, lon in rows]
         plans = [(fid, grading.Plan(p[:, :2], p[:, 2], sp.width / 2 + grading.shoulder(sp), road_half=sp.width / 2))
@@ -212,7 +222,7 @@ class RuralTeeTest(unittest.TestCase):
         decal = 3.25 + (roads.EDGE_DECAL_AT - 0.5) * roads.EDGE_DECAL["w"]
         line = 3.25 - roads.EDGE_LINE["inset"]
         for m, off in ((DECAL, decal), ("line_white", line)):
-            north = [np.array(c["n"]) for c in chunks if c["m"] == m and len(c["n"]) <= 10
+            north = [np.array(c["n"]) for c in chunks if c["m"] == m
                      and all(abs(q[1] - off) < 0.02 for q in c["n"])]
             self.assertTrue(north)
             xs = np.concatenate([p[:, 0] for p in north])

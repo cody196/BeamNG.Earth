@@ -76,7 +76,8 @@ def _normals(xy):
 
 def ribbon_pairs(chunks):
     """[(ribbon, its chunk)]: ribbons() of each chunk with it (ribbons() leaves out a chunk too short)."""
-    return [(r, c) for c in chunks for r in ribbons([c])]
+    chunks = list(chunks)
+    return [(r, c) for r, c in zip(_ribbon_slots(chunks), chunks) if r is not None]
 
 
 def ribbons(chunks):
@@ -84,6 +85,11 @@ def ribbons(chunks):
     frame; z: the chunk's own heights where it is "fixed" (bridge decks), else None (draped). Pure. The draped and
     plain chunks' resampling and normals in one Rust call (earthfast.ribbon_edges: numpy per chunk was ~0.9 s of 8
     city road tiles, 2026-10-28); a fixed deck's (its profile's knots kept) here."""
+    return [r for r in _ribbon_slots(chunks) if r is not None]
+
+
+def _ribbon_slots(chunks):
+    """Batch all eligible chunks, retaining empty slots so each ribbon keeps its owner."""
     import fast
     out = [None] * len(chunks)
     batch, pts, half = [], [], []
@@ -91,12 +97,15 @@ def ribbons(chunks):
         p = np.asarray(c["n"], np.float64)
         if len(p) < 2:
             continue
-        if c.get("deck") and c.get("fixed"):
+        # Fine prepared curves must keep their knots; straight/coarse ribbons
+        # retain the beta's batched native path.
+        fine = len(p) > 2 and np.any(np.linalg.norm(np.diff(p[:, :2], axis=0), axis=1) < DRAPE_STEP)
+        if (c.get("deck") and c.get("fixed")) or fine:
             xy, s, z = _resample(p, DRAPE_STEP, keep_vertices=True)
             if len(xy) < 2:
                 continue
             n = _normals(xy) * (float(c["w"]) / 2)
-            out[k] = (xy + n, xy - n, s / float(c.get("tl") or 10.0), c["m"], layer_of(c), z)
+            out[k] = (xy + n, xy - n, s / float(c.get("tl") or 10.0), c["m"], layer_of(c), z if c.get("fixed") else None)
             continue
         batch.append(k)
         pts.append(p[:, :3])
@@ -113,7 +122,7 @@ def ribbons(chunks):
             c = chunks[k]
             out[k] = (L[a:b], R[a:b], S[a:b] / float(c.get("tl") or 10.0), c["m"], layer_of(c),
                       Z[a:b] if c.get("fixed") else None)
-    return [r for r in out if r is not None]
+    return out
 
 
 TRIM_DZ = (0.3, 4.5)                # m: another deck overlapping a deck in plan this far above or below it (two
@@ -353,10 +362,11 @@ def build(frame, chunks, elev, origin, lift=0.0, clip=None, follow=False, q=None
     chunks = [c for c in chunks if not c.get("tube_only")]  # (twin tunnels' tube: no road surface, roads._tunnel_chunks)
     if clip is not None:
         chunks = [_reach_past(c, clip) for c in chunks]
-    rb = ribbons(chunks)                        # deck surfaces too: their asphalt over deck()'s concrete
-    if any(r[5] is not None for r in rb):       # (trimmed as deck() trims their slabs: context, the decks around)
-        ctx = [(r, c) for r, c in ribbon_pairs(list(context)) if r[5] is not None]
-        rb = [r for r, _c in trim_overlaps(ribbon_pairs(chunks), ctx)]
+    pairs = ribbon_pairs(chunks)               # deck surfaces too: their asphalt over deck()'s concrete
+    if any(r[5] is not None for r, _c in pairs):  # (trimmed as deck() trims their slabs)
+        ctx = ribbon_pairs(c for c in context if c.get("fixed"))
+        pairs = trim_overlaps(pairs, ctx)
+    rb = [r for r, _c in pairs]
     polys = [c for c in chunks if c.get("poly")]
     if not rb and not polys:
         return None
@@ -599,13 +609,13 @@ def deck(chunks, origin, piers=(), context=(), beams=(), ground=(), parapets=Non
     material index) or None. ground: the tile's ground carriageways (roads.build_tile cover_out) for the parapet
     test, drawn or not (with the roads painted into the ground the chunks have none). Pure."""
     dch = [c for c in chunks if c.get("deck")]
-    cr_all = [(r, c) for r, c in ribbon_pairs(list(context)) if r[5] is not None]
+    cr_all = ribbon_pairs(c for c in context if c.get("fixed"))
     rb = trim_overlaps([(r, c) for r, c in ribbon_pairs(dch) if r[5] is not None], cr_all)
     if not rb and not piers and not beams and not pads:
         return None
     low_parapet_decks = set(low_parapet_decks or ())
     if parapets is None:
-        parapets = parapet_runs(chunks, context, _rb=rb, ground=ground, pads=pads)
+        parapets = parapet_runs(chunks, context, _rb=rb, ground=ground, pads=pads, _context=cr_all)
     parapets_by_deck = {}
     for parapet in parapets:
         parapets_by_deck.setdefault(parapet["deck"], []).append(parapet)
@@ -619,14 +629,14 @@ def deck(chunks, origin, piers=(), context=(), beams=(), ground=(), parapets=Non
         P.append(np.concatenate([a, b]))
         UV.append(np.column_stack((np.concatenate((np.full(k, ua), np.full(k, ub))), np.concatenate((va, vb)))))
         i = np.arange(k - 1)
-        A, A1, B, B1 = nv + i, nv + i + 1, nv + k + i, nv + k + i + 1
+        A, A1, B, B1 = i, i + 1, k + i, k + i + 1
         tri = np.concatenate([np.stack([A, B, B1], 1), np.stack([A, B1, A1], 1)])
-        pts = np.concatenate(P)
+        pts = P[-1]
         nrm = np.cross(pts[tri[:, 1]] - pts[tri[:, 0]], pts[tri[:, 2]] - pts[tri[:, 0]])
         want = np.broadcast_to(np.concatenate([up[:-1], up[:-1]]) if np.ndim(up) == 2 else up, nrm.shape)
         flip = (nrm * want).sum(1) < 0
         tri[flip] = tri[flip][:, ::-1]
-        T.append(tri)
+        T.append(tri + nv)
         M.append(np.full(len(tri), mi))
         nv += 2 * k
 
@@ -636,11 +646,9 @@ def deck(chunks, origin, piers=(), context=(), beams=(), ground=(), parapets=Non
     if DECK_TOP not in mats:
         mats.append(DECK_TOP)
     top = mats.index(DECK_TOP)
-    cr = [r for r in ribbons(list(context)) if r[5] is not None]
-    cov_ctx = [(r, c) for r, c in zip(cr, context)] + _ground_carriageways(list(chunks) + list(ground))
-    covered = _parapet_cover([(r, c) for r, c in rb], cov_ctx)
-    medians = _median_gaps([(r, c) for r, c in rb],
-                           [(r, c) for r, c in zip(ribbons(list(context)), context) if r[5] is not None])
+    cov_ctx = cr_all + _ground_carriageways(list(chunks) + list(ground))
+    covered = _parapet_cover(rb, cov_ctx)
+    medians = _median_gaps(rb, cr_all)
     for n, ((left, right, v, m, layer, z), c) in enumerate(rb):
         k = len(z)
         lat = left - right
@@ -950,27 +958,25 @@ def _parapet_cover(rb, context=()):
 
 
 
-def parapet_runs(chunks, context=(), _rb=None, ground=(), pads=()):
+def parapet_runs(chunks, context=(), _rb=None, ground=(), pads=(), _context=None):
     """Actual generated bridge parapets as XY centre lines plus the mesh geometry.
 
     Uses the same coverage masks, edge offsets, tunnel exclusion, and minimum-run rule as deck().
     _rb lets deck() share its already-computed ribbons. Returned dictionaries are ordered by deck
     chunk and edge, and include the points deck() uses verbatim.
     """
+    cr_all = ribbon_pairs(c for c in context if c.get("fixed")) if _context is None else _context
     if _rb is None:
         dch = [c for c in chunks if c.get("deck")]
-        cr_all = [(r, c) for r, c in ribbon_pairs(list(context)) if r[5] is not None]
         rb = trim_overlaps([(r, c) for r, c in ribbon_pairs(dch) if r[5] is not None], cr_all)
     else:
         rb = _rb
     if not rb:
         return []
 
-    cr = [r for r in ribbons(list(context)) if r[5] is not None]
-    cov_ctx = [(r, c) for r, c in zip(cr, context)] + _ground_carriageways(list(chunks) + list(ground))
-    covered = _parapet_cover([(r, c) for r, c in rb], cov_ctx)
-    medians = _median_gaps([(r, c) for r, c in rb],
-                           [(r, c) for r, c in zip(ribbons(list(context)), context) if r[5] is not None])
+    cov_ctx = cr_all + _ground_carriageways(list(chunks) + list(ground))
+    covered = _parapet_cover(rb, cov_ctx)
+    medians = _median_gaps(rb, cr_all)
     out = []
     for n, ((left, right, v, _m, _layer, z), c) in enumerate(rb):
         if c.get("tunnel"):       # deck() draws the tunnel floor without parapets
@@ -1208,7 +1214,7 @@ def tunnel(chunks, origin, walls=()):
     floor; at a chunk end that is a portal ("portal") a face around the opening, seen from both sides. (positions,
     tris, uvs, materials, tri material index) or None. Pure."""
     tc = [c for c in chunks if c.get("tunnel") and not c.get("no_tube")]     # (twins: one tube_only round both)
-    rb = [(r, c) for r, c in zip(ribbons(tc), tc) if r[5] is not None] if tc else []
+    rb = [(r, c) for r, c in ribbon_pairs(tc) if r[5] is not None] if tc else []
     if not rb and not walls:
         return None
     P, T, UV, M = [], [], [], []           # M: per T entry its material index (0 concrete, 1 lamps, 2 stone, 3 dark stone,

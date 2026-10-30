@@ -94,7 +94,8 @@ VERSION = 2                     # pipeline version: bump when what a cell's laye
 # (osmtags osm_highway, construction/proposed roads left out, GitHub #184: only cells fetched after it; the cached
 # ones get it with the next Overture release bump, not a roads 7 here: every player's roads fetched again)
 # roads 7: a way without lanes takes the same-named way's (osmtags.join); one-way ends at their own lane (oneway_joins)
-LAYER_VERSIONS = {"roads": 7}
+# roads 8: validated highway counts and current-way geometry evidence, separate from named-street guesses
+LAYER_VERSIONS = {"roads": 8}
 # (LidarBC's measured canopy heights, maprasters.bc_canopy, are opt-in: BNE_BC_CANOPY=1 fills cells built after it;
 # no canopy version bump, which would fetch every player's canopy cells again)
                                 # (2: clipped polygon pieces `own`ed by their cell, exact cell edges,
@@ -617,30 +618,10 @@ class MapData:
                 self._lanes(key, layer, cd.layers[layer])
             else:
                 arrays, hit, dt = results[layer]
-                arrays = dict(arrays)
-                prov = json.loads(str(arrays.pop("provenance")))
-                en = arrays.pop("en.local", None)     # (the mirror's: this frame's, Features.localize)
-                if layer in VECTOR_LAYERS:
-                    f = mapgeom.Features.from_arrays(layer, arrays, "")
-                    if en is not None and len(en) == len(f.lonlat):
-                        f.en = en
-                        cd.layers[layer] = f
-                    else:
-                        cd.layers[layer] = f.localize(frame)
-                    # (which cell's layer: the per-cell facts the server's processes share, roads.cell_facts)
-                    self._rails(key, layer, cd.layers[layer])
-                    self._lanes(key, layer, cd.layers[layer])
-                    if layer == "buildings":    # (a "building" of a whole city's size: left out, GitHub #413)
-                        cd.layers[layer] = mapgeom.drop_huge(cd.layers[layer], BUILDING_MAX_M2)
-                    if layer == "roads":        # (the bridges the map lacks, found when its ranges are first asked)
-                        cd.layers[layer].__dict__["_bnge_gradesep"] = gradesep.hook(self, key)
-                    cd.layers[layer].__dict__["_bnge_cell"] = (str(key), layer, json.dumps(self.versions(),
-                                                                                           sort_keys=True))
-                elif "missing" in arrays:
-                    cd.layers[layer] = None
-                else:
-                    cd.layers[layer] = _raster_from(arrays)
-                self._remember((str(key), layer), (cd.layers[layer], prov, _nbytes(arrays)))
+                entry, shared = self._decode_layer(key, layer, arrays, frame)
+                cd.layers[layer], prov, _ = entry
+                if shared:
+                    dt, hit = 0.0, True
             if prov:
                 pid = prov["id"]
                 if pid in provs:            # roads + connectors: one transportation record
@@ -655,6 +636,49 @@ class MapData:
             cd.stats[layer] = {"s": dt, "hit": hit}
         cd.provenance = [provs[k] for k in sorted(provs)]
         return cd
+
+    def _decode_layer(self, key, layer, arrays, frame):
+        """One decoded cell per process, even when road/terrain/scenery threads miss together.
+
+        Download locks end before decoding. A separate lock covers curve preparation
+        and publication, without holding the global LRU lock during expensive work.
+        """
+        k = (str(key), layer)
+        with self._key_lock(key, "decoded:" + layer):
+            with self._mem_lock:
+                entry = self._mem.get(k)
+                if entry is not None:
+                    self._mem.move_to_end(k)
+            if entry is not None:
+                self._rails(key, layer, entry[0])
+                self._lanes(key, layer, entry[0])
+                return entry, True
+            arrays = dict(arrays)
+            prov = json.loads(str(arrays.pop("provenance")))
+            en = arrays.pop("en.local", None)
+            if layer in VECTOR_LAYERS:
+                f = mapgeom.Features.from_arrays(layer, arrays, "")
+                if layer == "roads":
+                    import roadcurves
+                    f = roadcurves.prepare(f)
+                    en = None  # mirror coordinates describe the unsmoothed source
+                if en is not None and len(en) == len(f.lonlat):
+                    f.en = en
+                else:
+                    f = f.localize(frame)
+                self._rails(key, layer, f)
+                self._lanes(key, layer, f)
+                if layer == "buildings":
+                    f = mapgeom.drop_huge(f, BUILDING_MAX_M2)
+                if layer == "roads":
+                    f.__dict__["_bnge_gradesep"] = gradesep.hook(self, key)
+                f.__dict__["_bnge_cell"] = (str(key), layer, json.dumps(self.versions(), sort_keys=True))
+            else:
+                f = None if "missing" in arrays else _raster_from(arrays)
+            memory = f.to_arrays("") if layer == "roads" else arrays
+            entry = (f, prov, _nbytes(memory))
+            self._remember(k, entry)
+            return entry, False
 
     def _remember(self, k, entry):
         """Keep a decoded layer for the next cell() of it (at most MEM_MB in all, least recently used out)."""

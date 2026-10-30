@@ -41,7 +41,7 @@ def _siblings(usable=None):
 
 
 def split(share=SERVER_SHARE):
-    """(server CPU set, game CPU set): the last cores (with their hyperthread siblings) for the server."""
+    """Disjoint physical cores, sharing each performance class on hybrid Windows CPUs."""
     cores = _siblings()
     if len(cores) < 4:
         return None, None              # too few cores to split usefully
@@ -52,9 +52,68 @@ def split(share=SERVER_SHARE):
             k = max(1, min(len(cores) // 2, want))
     except ValueError:
         pass
-    server = {c for _, cpus in cores[-k:] for c in cpus}
-    game = {c for _, cpus in cores[:-k] for c in cpus}
+    selected = select_server_cores(cores, k, _win_efficiency_classes() if WIN else {})
+    server = {c for _, cpus in selected for c in cpus}
+    game = {c for _, cpus in cores for c in cpus} - server
     return server, game
+
+
+def select_server_cores(cores, k, classes):
+    """Keep the requested core count and whole siblings, with a proportional mix of core types.
+
+    Taking only the last cores assigned all generation to three E cores on a 12700KF.
+    Unknown/uniform topology retains the old split; the game's first cores remain its own.
+    """
+    if not classes or any(c not in classes for _, cpus in cores for c in cpus):
+        return cores[-k:]
+    groups = {}
+    for core in cores:
+        groups.setdefault(max(classes[c] for c in core[1]), []).append(core)
+    if len(groups) < 2:
+        return cores[-k:]
+    quota = {cl: k * len(group) // len(cores) for cl, group in groups.items()}
+    order = sorted(groups, key=lambda cl: (k * len(groups[cl]) % len(cores), cl), reverse=True)
+    for cl in order[:k - sum(quota.values())]:
+        quota[cl] += 1
+    # Even a one-core server needs a fast core, when the game can retain one too.
+    fast = max(groups)
+    if len(groups[fast]) > 1 and quota[fast] == 0:
+        donor = min(cl for cl in groups if quota[cl])
+        quota[donor] -= 1
+        quota[fast] += 1
+    return [core for cl in sorted(groups) if quota[cl] for core in groups[cl][-quota[cl]:]]
+
+
+def _win_efficiency_classes():
+    """Logical CPU -> Windows EfficiencyClass (higher is faster), group zero as with our masks.
+
+    https://learn.microsoft.com/windows/win32/api/winnt/ns-winnt-system_cpu_set_information
+    Old Windows versions and an unavailable API simply retain the homogeneous split.
+    """
+    import ctypes
+    import struct
+    try:
+        query = _k32().GetSystemCpuSetInformation
+        n = ctypes.c_ulong()
+        query(None, 0, ctypes.byref(n), None, 0)
+        if not n.value:
+            return {}
+        buf = ctypes.create_string_buffer(n.value)
+        if not query(buf, len(buf), ctypes.byref(n), None, 0):
+            return {}
+        data, off, out = buf.raw[:n.value], 0, {}
+        while off + 8 <= len(data):
+            size, kind = struct.unpack_from('<II', data, off)
+            if size < 8 or off + size > len(data):
+                return {}
+            if kind == 0 and size >= 20:
+                group, logical = struct.unpack_from('<HB', data, off + 12)
+                if group == 0:
+                    out[logical] = data[off + 18]
+            off += size
+        return out
+    except (AttributeError, OSError, ValueError, struct.error):
+        return {}
 
 
 def pin_self(cpus):
