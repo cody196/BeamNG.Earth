@@ -34,6 +34,7 @@ M.MATERIAL_FILES = { '/levels/west_coast_usa/art/road/main.materials.json',
   '/levels/driver_training/art/road/main.materials.json',          -- m_metal_grid_drain (storm drains)
   '/levels/gridmap_v2/art/shapes/grid/main.materials.json',        -- m_gm_concrete_plain (concrete streets)
   '/levels/beamng_earth/art/shapes/beamngEarth/regional_signs/main.materials.json',
+  '/levels/beamng_earth/art/shapes/beamngEarth/welcome_signs/main.materials.json',
   '/levels/beamng_earth/art/shapes/beamngEarth/eu_surfaces/main.materials.json',
   '/levels/beamng_earth/art/shapes/beamngEarth/buildings.materials.json',  -- buildings (server/buildings.py)
   '/levels/beamng_earth/art/shapes/beamngEarth/fr_houses/main.materials.json',
@@ -48,7 +49,7 @@ M.enabled = true
 -- (key "s<tx>_<ty>") carry the render-only shapes SIGN_WHATS; switched off, their objects go but each tile keeps its data
 -- (signData) to show again at once
 M.signsEnabled = true
-M.SIGN_WHATS = { 'exits', 'mileposts', 'merges', 'speeds', 'dirs' }
+M.SIGN_WHATS = { 'exits', 'mileposts', 'merges', 'speeds', 'dirs', 'welcomes' }
 -- be:reloadCollision() at most this often: every rebuild is a ~20 ms physics frame (2026-10-13, the
 -- engine's frame metrics), and while driving new sidewalk tiles arrive all the time. They arrive ~640 m
 -- ahead (11 s at 58 m/s), so a few seconds before they collide do not matter. A terrain commit rebuilds
@@ -1105,7 +1106,7 @@ function M.onTile(msg, currentAnchor, a)
   -- pooled shape files: the server's slot paths instead of the tile's own files
   local slots = {}
   for _, what in ipairs({ 'road', 'deck', 'walk', 'walkcol', 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'wire', 'signs', 'tunnel', 'rail',
-      'railcol', 'barrier', 'exits', 'mileposts', 'merges', 'speeds', 'dirs' }) do
+      'railcol', 'barrier', 'exits', 'mileposts', 'merges', 'speeds', 'dirs', 'welcomes' }) do
     local sl = msgSlot(msg, what)
     if sl then
       if type(data[what]) == 'table' and type(data[what].pos) == 'table' then
@@ -1617,7 +1618,7 @@ M.GHOST_FAR_WAIT_S = 2      -- ... from this long after the rebase on
 local ghostSince = nil      -- stopwatch since the last rebase that left ghosts
 
 local WHATS = { 'walk', 'road', 'deck', 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'walkcol', 'wire', 'signs', 'tunnel', 'barrier', 'rail', 'railcol',
-  'exits', 'mileposts', 'merges', 'speeds', 'dirs' }
+  'exits', 'mileposts', 'merges', 'speeds', 'dirs', 'welcomes' }
 
 function M.transform(xf, geodesy)
   local bx, by, bz, bw = xf:beamngQuat()

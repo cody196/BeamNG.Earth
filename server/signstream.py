@@ -22,9 +22,10 @@ import signstates
 import dirsigns
 import speedsigns
 import staging
+import welcomesigns
 
 log = logging.getLogger('earthd.signs')
-KINDS = ('exits', 'mileposts', 'merges', 'speeds', 'dirs')
+KINDS = ('exits', 'mileposts', 'merges', 'speeds', 'dirs', 'welcomes')
 WORKERS = 1                     # sign tiles in flight per connection (Tracker): a road tile waits behind one at most
 WORLD = os.environ.get("BNE_SIGNS_WORLD") == "1"
 
@@ -75,6 +76,7 @@ def build_tile(md, frame, aid, tx, ty, elev, out_dir, vfs_dir, urban=None, width
                 pts = np.column_stack(frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.))
                 decks.append({'deck': True, 'n': pts, 'w': spec.width})
     speeds = _speeds(frame, tx, ty, elev, context, decks, left_hand, mph, speedsigns.style(country, us))
+    welcomes = _welcomes(frame, tx, ty, elev, context, decks, left_hand)
     dir_mesh, dir_faces = _dirs(md, frame, tx, ty, elev, context, decks, left_hand, mph, out_dir, vfs_dir)         if dirs else (None, {})
     import euguardrails
     french = False
@@ -87,10 +89,27 @@ def build_tile(md, frame, aid, tx, ty, elev, out_dir, vfs_dir, urban=None, width
         french = 'FR' in countrybounds.bundled().codes_at([(la, lo) for la, lo, _ in samples])
     if not (WORLD or us or french):
         # (not the US: no guide signs)
-        return write_tile(out_dir, vfs_dir, aid, tx, ty, (None, None, None, speeds, dir_mesh), dir_faces)
+        return write_tile(out_dir, vfs_dir, aid, tx, ty, (None, None, None, speeds, dir_mesh, welcomes), dir_faces)
     exits, miles = highwaysigns.build_tile(md, frame, tx, ty, elev, decks, left_hand, mph, urban, widths, french=french)
     merges = None if french else mergesigns.build_tile(frame, tx, ty, [feats], elev, decks, urban, widths, left_hand, context)
-    return write_tile(out_dir, vfs_dir, aid, tx, ty, (exits, miles, merges, speeds, dir_mesh), dir_faces)
+    return write_tile(out_dir, vfs_dir, aid, tx, ty, (exits, miles, merges, speeds, dir_mesh, welcomes), dir_faces)
+
+
+_warned_welcomes = -float('inf')
+
+
+def _welcomes(frame, tx, ty, elev, context, decks, left_hand):
+    """Optional state scenery cannot interrupt other signs or road readiness."""
+    global _warned_welcomes
+    try:
+        return welcomesigns.build_tile(frame, tx, ty, elev, context, decks, left_hand)
+    except Exception as error:
+        now = time.monotonic()
+        if now - _warned_welcomes >= 60.:
+            _warned_welcomes = now
+            log.warning('State welcome signs unavailable; roads continue: %s: %s', type(error).__name__, error,
+                        exc_info=True)
+        return None
 
 
 _warned = -float('inf')

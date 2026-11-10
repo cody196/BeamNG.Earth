@@ -1531,6 +1531,10 @@ def update_at_start(args, ask=input, popup=update_popup, packaged=None, check=No
         import netfetch
         import selfupdate
         import updates
+        variant = updates.build_variant()
+        if variant:
+            row("Build", f"{variant} (custom; install matching updates manually)")
+            return False
         net = netfetch.default_fetcher()
         current = install.version()
         got = (check or updates.check)(current, net)

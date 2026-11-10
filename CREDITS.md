@@ -10,6 +10,27 @@ Status: **in use** = used by the current main branch; **branch** = on a feature 
 yet; **planned** = in the roadmap, not used yet; **reference** = consulted for research or tuning
 only, nothing redistributed. Licence notes marked *(verify)* must be re-checked before any release.
 
+## State welcome signs (bundled)
+
+- State crossing outlines: U.S. Census Bureau TIGERweb Generalized ACS 2024,
+  States 500K, public domain. `server/data/welcome_states.NOTICE.md` records the source.
+- State-specific board faces are researched recreations. Individual selected
+  editions and references are in `docs/STATE_WELCOME_SIGN_REFERENCES.md` and
+  the client `welcome_signs/sources.json`. No reference photograph pixels are
+  redistributed. Custom lettering and illustrated scenery are approximations.
+- Public-domain emblem components: Maryland flag (Open Clip Art / Commons,
+  CC0), New York coat of arms (Fenn-O-maniC / HapHaxion, US public domain),
+  West Virginia seal (Joseph H. Diss Debar, Xrmap public-domain collection,
+  Militaryace / Svgalbertian). Source links and terms are recorded in the
+  client `welcome_signs/NOTICE.md`; SVGs and PNG renders are retained under
+  `tools/sign_art/welcome/components/`.
+- Yellowtail lettering: copyright 2011 Brian J. Bonislawsky DBA Astigmatic (AOETI),
+  Apache License 2.0. Bundled font and license in `tools/fonts/`; the license also
+  ships beside the generated textures. Roadgeek and DejaVu licenses are retained there too.
+- Lora regular/bold and italic: copyright 2011 The Lora Project Authors,
+  SIL Open Font License 1.1. `tools/fonts/Lora-LICENSE.txt` is also packaged
+  with the welcome textures.
+
 ## Regional furniture experiment (bundled, opt-in)
 
 - `server/data/country_bounds.zip`: worldwide territorial countries/dependencies,

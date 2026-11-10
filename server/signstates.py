@@ -31,12 +31,16 @@ def _polygons():
 
 def states(lat, lon):
     """State abbreviation, or '' outside the 50 states / DC; holes and islands respected."""
+    return lookup(lat, lon, _polygons())
+
+
+def lookup(lat, lon, polygons):
+    """Shared point-in-polygon lookup, also used by the finer welcome-sign boundaries."""
     lat, lon = np.broadcast_arrays(lat, lon)
     x, y = lon.ravel(), lat.ravel()
     found = np.full(len(x), '', dtype='U2')
     if not len(x):
         return found.reshape(lat.shape)
-    polygons = _polygons()
     # One vectorized bounds test replaces a Python/numpy lookup for every US
     # island on every stroke. Keep the original polygon order and exact test.
     finite = np.isfinite(x) & np.isfinite(y)

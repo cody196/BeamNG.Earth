@@ -139,7 +139,7 @@ BOOT_SHIM = ("import sys\n"
              "run(sys.argv[1:])\n")
 
 
-def pyinstaller(work, ico, onefile, ver=None, boot=None):
+def pyinstaller(work, ico, onefile, ver=None, boot=None, build_variant=None):
     server = os.path.join(ROOT, "server")
     mods = sorted(os.path.splitext(os.path.basename(p))[0] for p in glob.glob(os.path.join(server, "*.py")))
     cmd = [sys.executable] + (["-c", BOOT_SHIM, boot] if boot else ["-m", "PyInstaller"])
@@ -156,6 +156,9 @@ def pyinstaller(work, ico, onefile, ver=None, boot=None):
            "--add-data", f"{os.path.join(ROOT, 'docs', 'SHARED_WORLD.md')}{SEP}docs",
            "--add-data", f"{os.path.join(ROOT, 'docs', 'RELAUNCH_TROUBLESHOOTING.md')}{SEP}docs",
            "--add-data", f"{os.path.join(ROOT, 'docs', 'STABILITY_VALIDATION.md')}{SEP}docs",
+           "--add-data", f"{os.path.join(ROOT, 'docs', 'STATE_WELCOME_SIGNS.md')}{SEP}docs",
+           "--add-data", f"{os.path.join(ROOT, 'docs', 'STATE_WELCOME_SIGN_REFERENCES.md')}{SEP}docs",
+           "--add-data", f"{os.path.join(ROOT, 'docs', 'COMBINED_SIGNS_1_9_1.md')}{SEP}docs",
            "--add-data", f"{os.path.join(server, 'bridges_us.npz')}{SEP}.",     # (bridgetypes.DB_PATH: beside the modules)
            "--add-data", f"{os.path.join(server, 'bridges_wd.npz')}{SEP}.",     # (bridgetypes.WD_PATH)
            "--add-data", f"{os.path.join(server, 'koppen_1991_2020_0p1.png')}{SEP}.",  # (climate.PATH)
@@ -189,6 +192,11 @@ def pyinstaller(work, ico, onefile, ver=None, boot=None):
     with open(os.path.join(work, "REVISIT_ID"), "w", encoding="ascii") as f:
         f.write(revisit.source_id(server))
     cmd += ["--add-data", f"{os.path.join(work, 'REVISIT_ID')}{SEP}."]
+    if build_variant:
+        marker = os.path.join(work, "BUILD_VARIANT")
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write(build_variant.strip() + "\n")
+        cmd += ["--add-data", f"{marker}{SEP}."]
     cmd += ["--onefile"] if onefile else ["--onedir"]
     if IS_WIN:
         vf, mf = version_files(work, ver)
@@ -231,6 +239,7 @@ def main():
     ap.add_argument("--appimagetool", default=shutil.which("appimagetool") or "appimagetool",
                     help="Linux: the appimagetool executable (or its .AppImage)")
     ap.add_argument("--out", default=os.path.join(ROOT, "dist"))
+    ap.add_argument("--build-variant", help="custom build name; keep local features by disabling stock updates")
     ap.add_argument("--stock-bootloader", action="store_true",
                     help="Windows: PyInstaller's prebuilt bootloader even when tools/build_bootloader.py made one")
     ap.add_argument("--require-own-bootloader", action="store_true",
@@ -251,11 +260,11 @@ def main():
         else:
             print("WARNING: PyInstaller's prebuilt bootloader (antivirus heuristics know it): "
                   "run tools/build_bootloader.py first")
-        dist = pyinstaller(work, ico, onefile=True, ver=ver, boot=boot)
+        dist = pyinstaller(work, ico, onefile=True, ver=ver, boot=boot, build_variant=a.build_variant)
         out = os.path.join(a.out, f"{NAME}-{ver}.exe")
         shutil.copyfile(os.path.join(dist, NAME + ".exe"), out)
     else:
-        dist = pyinstaller(work, ico, onefile=False)
+        dist = pyinstaller(work, ico, onefile=False, build_variant=a.build_variant)
         out = os.path.join(a.out, f"{NAME}-{ver}-x86_64.AppImage")
         appimage(dist, png, out, a.appimagetool)
     print(f"built {out} ({os.path.getsize(out) / 1e6:.0f} MB)")

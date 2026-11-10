@@ -1,0 +1,563 @@
+{
+  "version": 2,
+  "states": {
+    "AL": {
+      "name": "Alabama",
+      "edition": "Sweet Home",
+      "description": "Green board, sans-serif welcome, white serif Sweet Home Alabama.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:Welcome_to_Sweet_Home_Alabama_(Jackson).jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "AK": {
+      "name": "Alaska",
+      "edition": "Klondike gateway",
+      "description": "Wood-framed black-and-gold Alaska map design; a documented Skagway/White Pass regional variant.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:Welcome_to_Alaska_sign_on_the_Yukon_Highway.jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "AZ": {
+      "name": "Arizona",
+      "edition": "Classic flag sunburst",
+      "description": "Tall blue board, red/gold rays, white star and Grand Canyon State legend.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:Entering_Arizona_on_I-10_Westbound.jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "AR": {
+      "name": "Arkansas",
+      "edition": "Natural State",
+      "description": "Blue top and bottom bands, white centre, black serif Arkansas and green leaf.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:Arkansas_state_welcome_sign.jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "CA": {
+      "name": "California",
+      "edition": "Golden poppies",
+      "description": "Blue field, gold script and three California poppies.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:Welcome_to_California_Sign_(32517668580).jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "CO": {
+      "name": "Colorado",
+      "edition": "Colorful Colorado wooden board",
+      "description": "Cream block lettering on a brown wooden face.",
+      "references": [
+        "https://www.codot.gov/programs/dmo/welcome-to-colorado-sign"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "CT": {
+      "name": "Connecticut",
+      "edition": "Traditional general welcome",
+      "description": "Three-line Connecticut Welcomes You; 2024 corridor-specific slogans are not assigned statewide.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:Connecticut.JPG"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "DE": {
+      "name": "Delaware",
+      "edition": "Endless Discoveries",
+      "description": "White field, dark serif Delaware, blue/teal waves and script tagline.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:2017-08-12_15_33_55_View_east_along_Delaware_State_Route_279_(Elkton_Road)_at_McIntire_Drive,_entering_Newark,_New_Castle_County,_Delaware_from_Iron_Hill,_Cecil_County,_Maryland.jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "FL": {
+      "name": "Florida",
+      "edition": "Sunshine State classic",
+      "description": "Blue field, white lettering, orange replacing O, green palm silhouettes; pre-2024 slogan edition.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:2016-03-23_08_00_16_%22Welcome_to_Florida%22_sign_along_southbound_Florida_State_Route_97_entering_Escambia_County,_Florida_from_Atmore,_Alabama.jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "GA": {
+      "name": "Georgia",
+      "edition": "On your mind",
+      "description": "Blue board, white serif four-line greeting and orange peach.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:Georgia_Welcome_sign,_US84EB.JPG"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "ID": {
+      "name": "Idaho",
+      "edition": "Blue serif IDAHO",
+      "description": "Blue field, white sans-serif greeting and large serif state name.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:Idaho_welcome_sign.jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "IL": {
+      "name": "Illinois",
+      "edition": "Land of Lincoln",
+      "description": "Green/white bands, green serif ILLINOIS and Lincoln profile.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:US34_East_-_Welcome_to_Illinois_(28090875167).jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "IN": {
+      "name": "Indiana",
+      "edition": "More to Discover, 2023",
+      "description": "User-supplied I-69 face: charcoal green, red IN badge, gold script and blue presidential-history panel.",
+      "references": [
+        "https://visitindiana.in.gov/articles/post/gov-holcomb-unveils-welcome-signage/"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "reference_note": "Also checked against the user-supplied I-69 Michigan/Indiana photo.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "IA": {
+      "name": "Iowa",
+      "edition": "Fields of Opportunities",
+      "description": "White field, dark serif greeting, green ribbon, gold sun rays and Iowa script.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:Iowa_State_Line_-_Welcome_to_Iowa_(45640940064).jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "KS": {
+      "name": "Kansas",
+      "edition": "Gold swoosh and star",
+      "description": "Blue field, white sans-serif lettering, gold rising swoosh ending in a star.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:Welcome_to_Kansas_4892142218.jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "KY": {
+      "name": "Kentucky",
+      "edition": "Unbridled Spirit",
+      "description": "Blue board, white Kentucky silhouette, blue italic logo and horse-head flourish.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:Welcome_to_Kentucky_-_October_2023_-_Sarah_Stierch.jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "LA": {
+      "name": "Louisiana",
+      "edition": "Fleur-de-lis bilingual",
+      "description": "Blue, white English/French greeting and large gold fleur-de-lis.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:2016-03-22_13_02_52_%22Welcome_to_Louisiana%22_sign_along_southbound_Interstate_49_entering_Caddo_Parish,_Louisiana_from_Miller_County,_Arkansas.jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "ME": {
+      "name": "Maine",
+      "edition": "The Way Life Should Be",
+      "description": "Blue board and white highway lettering; no invented tree graphic.",
+      "references": [
+        "https://www.maineturnpike.com/news/recent-news/",
+        "https://www.maineturnpike.com/getattachment/b9a5fb25-83e1-4908-b001-0809a863e52e/width_1600.jpeg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "MD": {
+      "name": "Maryland",
+      "edition": "Open for Business arch",
+      "description": "Arched gold/black border, Maryland flag, black-eyed Susans and older Open for Business footer.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:2016-10-13_08_50_09_%22Maryland_Welcomes_You%22_sign_along_northbound_Interstate_495_(Capital_Beltway)_entering_Cabin_John,_Montgomery_County,_Maryland_from_McLean,_Fairfax_County,_Virginia.jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "MA": {
+      "name": "Massachusetts",
+      "edition": "Welcomes You, chickadee",
+      "description": "Blue field, sans-serif state name, white script, mayflowers and chickadee.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:2017-07-27_14_59_10_View_south_along_Interstate_95_entering_Salisbury,_Essex_County,_Massachusetts_from_Seabrook,_Rockingham_County,_New_Hampshire.jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "MI": {
+      "name": "Michigan",
+      "edition": "MDOT I2-5, 2020",
+      "description": "228 by 78 inch freeway proportions; white PURE/ICHIGAN, light-blue script M, no white border.",
+      "references": [
+        "https://mdotjboss.state.mi.us/TSSD/getTSDocument.htm?docGuid=96afbfe9-49ac-4cd1-9916-dacfb3fd4247&fileName=mdot_signs_12_mdot_supplied+sign.pdf"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "size_m": [
+        5.7912,
+        1.9812
+      ],
+      "dimensions": "Documented freeway/major-entry board dimensions."
+    },
+    "MN": {
+      "name": "Minnesota",
+      "edition": "MnDOT Type III, 1996",
+      "description": "Yellow upper/blue lower fields, striped state map, pines and yellow Minnesota script. This metal-board variant is used rather than the Type I stone monument.",
+      "references": [
+        "https://www.dot.state.mn.us/restareas/entry-signs/entry-monuments.html",
+        "https://www.dot.state.mn.us/restareas/entry-signs/images/typeIII-entrance.jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "MS": {
+      "name": "Mississippi",
+      "edition": "Birthplace of Americas Music",
+      "description": "Blue board, white serif name, red state outline and musical notes.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:%22Mississippi_Welcomes_You%22_state_border_welcome_sign,_c._October_2006.jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "MO": {
+      "name": "Missouri",
+      "edition": "Spiral sun and river",
+      "description": "Blue board, white Missouri wordmark with river S, gold spiral sun and greeting.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:Missouri_Welcomes_You_sign_I-155_2013-05-11_001.jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "MT": {
+      "name": "Montana",
+      "edition": "2026 statewide design",
+      "description": "Light-blue outer field, navy Montana silhouette, circular mountains/badlands emblem and red state name.",
+      "references": [
+        "https://news.mt.gov/Governors-Office/Governor-Gianforte-Unveils-Montanas-New-Highway-Welcome-Signs",
+        "https://gov.mt.gov/_docs/governor/NewWelcometoMontanaSign.jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "NE": {
+      "name": "Nebraska",
+      "edition": "Good life / Arbor Day",
+      "description": "Green field, white name and good life copy, yellow sun, covered wagon and Arbor Day footer.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:Nebraska.JPG"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "NV": {
+      "name": "Nevada",
+      "edition": "Classic prospector",
+      "description": "Documented sunset-and-prospector edition. Retained as a historic design; not claimed to be the 2017 replacement.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:2014-08-09_15_24_21_View_west_along_U.S._Routes_6_and_50_crossing_from_Utah_into_White_Pine_County,_Nevada.JPG"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "NH": {
+      "name": "New Hampshire",
+      "edition": "Granite State blue and gold",
+      "description": "Blue field, gold script greeting, serif NEW HAMPSHIRE and gold ruled footer.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:New_Hampshire.jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "NJ": {
+      "name": "New Jersey",
+      "edition": "Green state silhouette",
+      "description": "White/tan state outline on green and a pale central NEW JERSEY band.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:US_202_NB_Welcome_to_New_Jersey.JPG"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "NM": {
+      "name": "New Mexico",
+      "edition": "Chile peppers",
+      "description": "Yellow field, red/green peppers, black state name and red Land of Enchantment tagline.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:2016-03-21_10_04_58_%22Welcome_to_New_Mexico%22_sign_along_eastbound_Interstate_40_entering_McKinley_County,_New_Mexico_from_Apache_County,_Arizona.jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "NY": {
+      "name": "New York",
+      "edition": "Green Empire State, mixed-case lettering",
+      "description": "Green board, white highway lettering and state coat of arms.",
+      "references": [
+        "https://www.billburmaster.com/rmsandw/new_york/index.html",
+        "https://www.billburmaster.com/rmsandw/new_york/images/nywele860812.jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "NC": {
+      "name": "North Carolina",
+      "edition": "Flag and green board",
+      "description": "Green background, North Carolina flag, white Welcome To and large state name.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:2017-06-26_10_29_04_View_south_along_U.S._Route_29_Business_(Main_Street)_entering_Caswell_County,_North_Carolina_from_Danville,_Virginia.jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "ND": {
+      "name": "North Dakota",
+      "edition": "Legendary blue/white",
+      "description": "Blue board with white border, white greeting/tagline and large white North Dakota script, as photographed on ND 210 in 2018.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:ND210_West_-_Welcome_to_North_Dakota_Sign_(42678037784).jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "OH": {
+      "name": "Ohio",
+      "edition": "Heart of it All, 2023",
+      "description": "White field, red Ohio outline, blue Ohio script and red/blue wording.",
+      "references": [
+        "https://content.govdelivery.com/accounts/OHDOT/bulletins/3703166"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "OK": {
+      "name": "Oklahoma",
+      "edition": "ODOT 2020 brand",
+      "description": "White 20 by 10 foot board, blue greeting, black name and multicolour folded-star mark.",
+      "references": [
+        "https://oklahoma.gov/odot/about-us/newsroom/2020/february/a-sign-of-the-times--oklahoma-s-front-yard-welcomes-visitors-in.html"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "size_m": [
+        6.096,
+        3.048
+      ],
+      "dimensions": "Documented freeway/major-entry board dimensions."
+    },
+    "OR": {
+      "name": "Oregon",
+      "edition": "Oregon Trail",
+      "description": "White field, ochre state silhouette with three-line white lettering and green covered-wagon badge.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:Oregon.JPG"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "PA": {
+      "name": "Pennsylvania",
+      "edition": "Let Freedom Ring, 2024",
+      "description": "Cream field, arched blue name, red greeting/tagline and blue Liberty Bell on red support.",
+      "references": [
+        "https://dced.pa.gov/newsroom/governor-shapiro-unveils-new-highway-welcome-signs-license-plates-celebrating-pennsylvania-as-the-birthplace-of-american-democracy/",
+        "https://www.pa.gov/content/dam/copapwp-pagov/en/penndot/documents/documents/dotcom/2024_summer_dotcom_9-24_web.pdf"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "RI": {
+      "name": "Rhode Island",
+      "edition": "Ocean State sailboat",
+      "description": "Cream field, small blue sailboat above three lines of blue lettering.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:Rhode_Island.JPG"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "SC": {
+      "name": "South Carolina",
+      "edition": "Smiling Faces / Beautiful Places",
+      "description": "Blue board, red edge, circular state medallion at left and white script/serif text.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:2016-03-23_14_53_02_%22Welcome_to_South_Carolina%22_sign_along_northbound_Interstate_85_entering_Oconee_County,_South_Carolina_from_Hart_County,_Georgia.jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "SD": {
+      "name": "South Dakota",
+      "edition": "Great Faces Great Places",
+      "description": "Cream field, burgundy script and gold Mount Rushmore line illustration.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:Welcome_to_south_dakota.jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "TN": {
+      "name": "Tennessee",
+      "edition": "TN-50b conventional-road design",
+      "description": "Blue field, white state silhouette, dark Tennessee/Volunteer State lettering and small Tennessee flag. Not the new 2026 scenic freeway mural.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:Tennessee.JPG",
+        "https://www.ext.glb.mytn.gov/content/dam/tn/tdot/traffic-engineering/TN-Supplement%20to%20Standard%20Highway%20Sign%20Book%202026%20Final.pdf"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "TX": {
+      "name": "Texas",
+      "edition": "TxDOT I-2T",
+      "description": "Interstate 18 by 11 foot board, green/white, flowing script and waving Texas flag on gold pole.",
+      "references": [
+        "https://www.txdot.gov/manuals/trf/smk/guide_signs/welcome_to_texas_signs-cegjejbf.html"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "size_m": [
+        5.4864,
+        3.3528
+      ],
+      "dimensions": "Documented freeway/major-entry board dimensions."
+    },
+    "UT": {
+      "name": "Utah",
+      "edition": "Life Elevated skier",
+      "description": "Blue sky, snowy mountains, skier, cream UTAH and gold Life Elevated footer; scenic artwork redrawn as vector illustration.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:Utah_Welcome_Sign.jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "VT": {
+      "name": "Vermont",
+      "edition": "Green Mountain State",
+      "description": "White upper mountain silhouette, green face, white script/serif lettering.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:2019-09-21_13_01_01_View_east_at_the_west_end_of_Vermont_State_Route_279_(Bennington_Bypass),_entering_Bennington,_Bennington_County,_Vermont_from_Hoosick,_Rensselaer_County,_New_York.jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "VA": {
+      "name": "Virginia",
+      "edition": "Cardinal and dogwood",
+      "description": "Cream field, large blue serif Virginia, cardinal/dogwood branch and burgundy Welcomes You.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:VA_I-95N_Welcome_Center-01.jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "WA": {
+      "name": "Washington",
+      "edition": "Evergreen State silhouette",
+      "description": "White Washington silhouette on green with green lettering inside.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:Welcome_to_Washington,_Interstate_82_Near_Umatilla,_Oregon_(265659312).jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "WV": {
+      "name": "West Virginia",
+      "edition": "Wild and Wonderful scenic",
+      "description": "Appalachian ridge illustration, cream state name, public-domain seal and gold italic tagline.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:Int64wRoad-WelcomeToWestVirginiaVABorder_(33873443985).jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "WI": {
+      "name": "Wisconsin",
+      "edition": "Blue board with projecting state",
+      "description": "Blue/white highway lettering and a separate green Wisconsin silhouette projecting above the board.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:USRoute10WelcomeToWisconsin.jpg"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    },
+    "WY": {
+      "name": "Wyoming",
+      "edition": "Devils Tower scenic",
+      "description": "Historic wood-framed Devils Tower edition, white lettering and small bucking horse/rider; not claimed to be the 2024 postcard replacement.",
+      "references": [
+        "https://commons.wikimedia.org/wiki/File:Wyoming.JPG"
+      ],
+      "reviewed": "2026-11-09",
+      "fidelity": "Reference-based redraw; custom lettering and illustrated details are approximations.",
+      "dimensions": "Estimated size; face aspect ratio matched to the selected design."
+    }
+  }
+}

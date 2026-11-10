@@ -94,6 +94,10 @@ def download(net, current, path=None, progress=None):
     """Download the latest release's file for the packaged app at path (default: this one) beside it and stage it.
     Returns (version, the new file's path). progress(done bytes, total bytes) is called as it goes. Raises
     UpdateError (no newer release, a source copy, no matching asset, a bad download)."""
+    variant = updates.build_variant()
+    if variant:
+        raise UpdateError(f"This custom build ({variant}) requires a matching custom update to keep its features. "
+                          "Install the newer custom executable manually.")
     path = path or packaged_path()
     if not path:
         raise UpdateError("this copy runs from source: update it with git pull")
@@ -161,6 +165,10 @@ def staged(current, path=None):
     """The downloaded newer copy to start instead of this one (its path), or None. Checked again by its digest; the
     note is removed when that file is gone or changed (kept when it is not newer: the new copy itself reads it, and the
     old one, started again from the player's shortcut, still hands over)."""
+    if updates.build_variant():
+        # A stock release staged by another EXE in the same folder must not
+        # take over a custom build. Leave that release and its note intact.
+        return None
     path = path or packaged_path()
     if not path:
         return None

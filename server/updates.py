@@ -40,6 +40,19 @@ def local_version(root=ROOT):
         return None
 
 
+def build_variant():
+    """Optional identity embedded by a custom build, independent of its filename.
+
+    Official release assets do not carry local features. A marked build must be
+    updated with a matching custom package, not the upstream release channel.
+    """
+    try:
+        with open(os.path.join(ROOT, "BUILD_VARIANT"), encoding="utf-8") as f:
+            return f.read().strip() or None
+    except FileNotFoundError:
+        return None
+
+
 def parse(v):
     """(major, minor, patch, release) of a version like "1.4.0-preview" ("-..." is a pre-release: below the same
     numbers without it; its dot-separated parts compared one by one, numbers as numbers, as semver: "beta" <
@@ -68,7 +81,7 @@ def newer(latest, current):
 
 def check(current, net=None):
     """The update GitHub has for version current, or None. Blocking (a worker thread)."""
-    if not current:
+    if not current or build_variant():
         return None
     net = net if net is not None else netfetch.default_fetcher()
     if is_dev(current):

@@ -72,6 +72,9 @@ You can help support development by reporting [issues](https://github.com/TecnaG
   in the gore, overhead destination signs, Interstate / US / state route shields in each state's style, yellow merge
   warnings at entrance ramps and Interstate mile markers, from the destinations and milestones mapped in
   OpenStreetMap (rebuilt weekly). Settings > World > Highway signs turns them off.
+- State welcome signs for the contiguous 48 states plus Alaska: distinct faces inspired by real roadside designs,
+  including Indiana's two-panel I-69 style. Signs face entering traffic at inferred major-road border crossings,
+  and use the Highway signs setting. Artwork and positions are approximate; see [state welcome signs](docs/STATE_WELCOME_SIGNS.md).
 - Speed-limit signs everywhere, showing the limit the traffic drives (the mapped one, else the road class's default):
   where the limit changes, past major junctions and motorway entrances, and as reminders on long roads; the US
   "SPEED LIMIT" panel, Canada's "MAXIMUM" panel, and elsewhere the round red-ring sign (mph in the UK). The Highway

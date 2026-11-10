@@ -135,4 +135,30 @@ settings.set('highwaySigns',true)
 roads.update(gov,30)
 T.check(shapes()[speedPath] ~= nil, 'and shows them again')
 T.check(not roads.settledFor(30,300,600), 'a speed-sign square is not a ready road')
+-- State welcome boards use the same lifecycle, including slot ownership.
+roads.clear()
+roads.reset()
+roads.setSession('signs')
+local welcomePath = '/temp/beamngEarth/signs/slot_00010.cdae'
+roads.onTile({anchorId=40,key='s0_0',data={chunks={},welcomes={shape=welcomePath,pos={10,20,0}}},
+  slots={welcomes={welcomePath,40}}},40)
+roads.update(gov,40)
+T.check(shapes()[welcomePath] and shapes()[welcomePath].fields.collisionType == 'None', 'welcome signs render without collision')
+T.check(#roads.slotsHeld('signs') == 1, 'welcome sign holds its pooled slot')
+T.check(not roads.settledFor(40,10,20), 'welcome boards cannot mark roads ready')
+settings.set('highwaySigns',false)
+roads.update(gov,40)
+T.check(not shapes()[welcomePath], 'highway signs toggle hides welcome boards')
+settings.set('highwaySigns',true)
+roads.update(gov,40)
+T.check(shapes()[welcomePath] ~= nil, 'toggle restores welcome boards')
+roads.onDrop({anchorId=40,key='s0_0'})
+roads.update(gov,40)
+T.check(not shapes()[welcomePath], 'dropping tile retires welcome board')
+T.check(#roads.takeSlotsGone('signs') == 1, 'welcome slot released after retirement')
+local welcomeMaterials = false
+for _, path in ipairs(roads.MATERIAL_FILES) do
+  if path:find('/welcome_signs/main.materials.json',1,true) then welcomeMaterials = true end
+end
+T.check(welcomeMaterials, 'welcome materials load even outside the Earth level')
 T.done('test_highway_signs')

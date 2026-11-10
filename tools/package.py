@@ -22,7 +22,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FILES = ["install.py", "start.py", "launcher.py", "bmplaunch.py", "apppaths.py", "run_server.bat", "run_server.sh", "README.md", "LICENSE", "CREDITS.md", "TELEMETRY.md",
          "VERSION", "docs/QUICKSTART.md", "docs/MODERNIZATION.md", "docs/MODERNIZATION_VALIDATION.md",
          "docs/SKETCHFAB_ASSETS.md", "docs/SHARED_WORLD.md", "docs/RELAUNCH_TROUBLESHOOTING.md", "docs/STABILITY_VALIDATION.md",
-         "docs/INITIAL_LOADING_VALIDATION.md",
+         "docs/INITIAL_LOADING_VALIDATION.md", "docs/STATE_WELCOME_SIGNS.md", "docs/STATE_WELCOME_SIGN_REFERENCES.md",
+         "docs/COMBINED_SIGNS_1_9_1.md",
          "docs/SUBSEA_TUNNEL_VALIDATION.md", "docs/licenses/Clarabel-LICENSE.txt",
          "docs/PLATFORM_STATUS.md", "docs/RELEASE_1_7_4.md", "docs/RELEASE_1_8_1.md",
          "docs/research/2026-11-02-range-cache.md", "docs/research/2026-11-02-world-bundle.md",
@@ -110,6 +111,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out", default=os.path.join(ROOT, "dist"), help="output folder (default: dist/)")
     ap.add_argument("--beammp", action="store_true", help="also the BeamMP server's drop-in zip")
+    ap.add_argument("--build-variant", help="custom build name; keep local features by disabling stock updates")
     args = ap.parse_args()
     ver = version()
     top = f"BeamNG.Earth-{ver}"
@@ -124,6 +126,8 @@ def main():
             info.external_attr = (0o100755 if os.path.basename(rel) in EXECUTABLE else 0o100644) << 16
             with open(src, "rb") as f:
                 z.writestr(info, f.read())
+        if args.build_variant:
+            z.writestr(f"{top}/BUILD_VARIANT", args.build_variant.strip() + "\n")
     print(f"{path}: {len(files)} files, {os.path.getsize(path) / 1e6:.1f} MB")
     if args.beammp:
         beammp_zip(args.out, ver)
