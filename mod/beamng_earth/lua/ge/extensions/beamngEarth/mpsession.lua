@@ -6,7 +6,7 @@
 --     heading (others(): the world map's arrows); the cars of a
 --     player whose anchor is not known (no BeamNG.Earth, or not heard yet) are deactivated here: they would stand in
 --     the wrong place;
---   - bngeGoTo { lat, lon }: on joining, a teleport to where the others are.
+--   - bngeGoTo { lat, lon }: on joining, a meeting invitation; returning players choose whether to leave their saved spot.
 -- Damage: BeamMP sends parts that break off (break groups) but not dents; its own full-damage message (nodesVE.getNodes:
 -- every node and beam, applied on the other players' copies by its nodesGE) is never sent. This sends our own cars'
 -- damage on BeamMP's full-damage path (nodesGE.sendNodes), as only the beams broken or bent (DAMAGE_VE: tens of KB for
@@ -66,6 +66,8 @@ local floating = {}         -- game vehicle id -> true: floating here (off our b
 local poseIn, hideIn = 0, 0
 local joined = false        -- BeamMP joined and no pose sent yet: the first pose asks for the meeting place
 local wentTo = false        -- the session's one bngeGoTo done
+local joinStart, joinTarget, joinPrompt = nil, nil, nil -- startup: nil (not known), saved, default, others, keep
+local joinReady, joinRetry, joinSerial = false, 0, 0  -- dialog waits for PostJoin; serial outlives session resets
 local camPlaced = false     -- the free camera put on the ground once (BeamMP joins without a car)
 local lastPlayers = -1      -- (the log: the player count as last logged)
 local stats = { anchors = 0, go = 0, poses = 0, converged = 0, peers = 0 }
@@ -576,20 +578,69 @@ end
 --   end
 -- end
 
+local JOIN_TITLE = 'BeamNG.Earth: where would you like to start?'
+local JOIN_CALL = "local m = package.loaded['beamngEarth/mpsession'] if m then m.onJoinChoice('%s', %d) end"
+local function closeJoinPrompt()
+  local shown = joinPrompt ~= nil
+  joinPrompt = nil -- a button already queued by the UI is now stale
+  if shown and guihooks and guihooks.trigger then guihooks.trigger('ConfirmationDialogClose', JOIN_TITLE) end
+end
+
+-- Core reports the startup source before it can be confused with positions written during this join.
+-- Only the first successful start counts; retries and PostJoin must not overwrite a choice already made.
+function M.startLocation(hasSaved)
+  if joinStart == nil then joinStart = hasSaved and 'saved' or 'default' end
+end
+function M.keepJoinLocation()
+  joinStart, joinTarget = 'keep', nil
+  closeJoinPrompt()
+end
+function M.onJoinChoice(choice, serial)
+  if not joinReady or not joinPrompt or serial ~= joinPrompt or joinStart ~= 'saved' or not joinTarget then return end
+  if choice == 'saved' then
+    M.keepJoinLocation()
+  elseif choice == 'others' then
+    joinStart, joinRetry = 'others', 0
+    closeJoinPrompt() -- teleport in update, when the companion connection is ready again
+  end
+end
+
+local function updateJoin()
+  if not joinReady or not joinStart or not joinTarget or wentTo or joinStart == 'keep' then return end
+  if joinStart == 'saved' then
+    if not joinPrompt and guihooks and guihooks.trigger then
+      joinSerial = joinSerial + 1
+      joinPrompt = joinSerial
+      -- Use the game's dismissible dialog API (popup.js). Escape takes the cancel button: keep the saved spot.
+      guihooks.trigger('ConfirmationDialogOpen', JOIN_TITLE,
+        'You have a saved location, and other players are elsewhere. Resume at your saved location or join them?',
+        'Join the others', string.format(JOIN_CALL, 'others', joinPrompt),
+        'Resume at saved location', string.format(JOIN_CALL, 'saved', joinPrompt))
+    end
+    return
+  end
+  local c = core()
+  if clock < joinRetry or not c or not c.teleport then return end
+  joinRetry = clock + M.POSE_S
+  -- beside the other player, not on it (12 m east)
+  local lat, lon = joinTarget.lat, joinTarget.lon
+  lon = (lon + M.GOTO_OFFSET_M / (111320 * math.max(0.01, math.cos(math.rad(lat)))) + 180) % 360 - 180
+  if c.teleport(lat, lon, nil, { record = false }) then
+    wentTo = true
+    M.keepJoinLocation()
+    log('I', 'beamngEarth', string.format('BeamMP: to the other players at %.5f, %.5f', lat, lon))
+  end
+end
+
 local function onGoTo(data)
   local ok, d = pcall(jsonDecode, data)
-  local c = core()
   stats.go = stats.go + 1
   if test.late and testClock < M.TEST_LATE_S then lateGoTo = data; return end
-  if wentTo or not ok or type(d) ~= 'table' or not c then return end
+  if joinStart == 'keep' or wentTo or joinTarget or not ok or type(d) ~= 'table' then return end
   local lat, lon = require('beamngEarth/mpanchor').coordinates(d.lat, d.lon)
   if not lat then return end
-  wentTo = true
-  -- beside the other player, not on it (12 m east)
-  lon = lon + M.GOTO_OFFSET_M / (111320 * math.max(0.01, math.cos(math.rad(lat))))
-  lon = (lon + 180) % 360 - 180
-  log('I', 'beamngEarth', string.format('BeamMP: to the other players at %.5f, %.5f', lat, lon))
-  c.teleport(lat, lon, nil, { record = false })
+  -- It may arrive before core has found the saved location, or before PostJoin. Resolve it in update.
+  joinTarget = { lat = lat, lon = lon }
 end
 
 onGoToRef = onGoTo
@@ -639,7 +690,8 @@ M.SUPPORT = 'BeamNG.Earth on BeamMP: for help join the TGForever Discord, https:
   .. 'not like a normal BeamNG mod: if something is not working, it is almost certainly a BeamNG.Earth problem, not a '
   .. 'BeamMP one, so please do not contact the BeamMP team or open BeamMP support tickets about it.'
 function M.onPostJoin()
-  joined, wentTo, camPlaced = true, false, false
+  joined, joinReady = true, true
+  -- A startup teleport may already own the camera. Only session teardown resets its placement and join choice.
   anchors = {}
   log('I', 'beamngEarth', M.SUPPORT)
 end
@@ -1066,6 +1118,7 @@ function M.update(dt, anchor, player)
     require('beamngEarth/net').send({ type = 'share_hello' })
   end
   if not anchor then return end
+  updateJoin()
   placeCamera(player)
   anchorRef = anchor
   testStep(dt)
@@ -1082,7 +1135,7 @@ function M.update(dt, anchor, player)
       if ok and tonumber(nx) and tonumber(ny) then h = (h - math.deg(math.atan2(nx, ny)) + 360) % 360 end
     end
     TriggerServerEvent('bngePose', jsonEncode({ v = M.PROTO, aLat = anchor.lat, aLon = anchor.lon, lat = lat,
-      lon = lon, joined = joined, h = h and math.floor(h * 10 + 0.5) / 10 or nil,
+      lon = lon, joined = joined and joinStart ~= 'keep', h = h and math.floor(h * 10 + 0.5) / 10 or nil,
       sc = shareInfo and shareInfo.code or nil, sw = shareInfo and shareInfo.weight or nil,
       rel = M.ownRelease() }))     -- (our map data's release: the others are told on another)
     stats.poses = stats.poses + 1
@@ -1244,6 +1297,8 @@ end
 
 -- The session's end (BeamMP left, the level's end): the deactivated cars back on, everything forgotten.
 function M.reset()
+  closeJoinPrompt()
+  joinStart, joinTarget, joinReady, joinRetry = nil, nil, false, 0
   shareInfo = nil             -- (asked again in the next session)
   M._releasesNoted = nil
   for gid in pairs(deactivated) do

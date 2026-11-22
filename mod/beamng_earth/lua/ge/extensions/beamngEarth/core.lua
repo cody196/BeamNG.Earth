@@ -270,22 +270,35 @@ local function defaultStart()
   -- place (a teleport's target), else this run's
   local okP, pos = pcall(places.lastPosition)
   if okP and type(pos) == 'table' and tonumber(pos.lat) and tonumber(pos.lon) then
-    return teleportTo(pos.lat, pos.lon, nil, 'start', pos.heading)   -- (facing the way it was left, placePlayer)
+    local ok = teleportTo(pos.lat, pos.lon, nil, 'start', pos.heading) -- facing the way it was left
+    if ok then mpsession.startLocation(true) end
+    return ok
   end
   if not ui.hasLatLon() then
     local okR, recent = pcall(places.recentList)
     local r = okR and type(recent) == 'table' and recent[1] or nil
-    if r and tonumber(r.lat) and tonumber(r.lon) then return teleportTo(r.lat, r.lon, r.name, 'start') end
+    if r and tonumber(r.lat) and tonumber(r.lon) then
+      local ok = teleportTo(r.lat, r.lon, r.name, 'start')
+      if ok then mpsession.startLocation(true) end
+      return ok
+    end
   end
   local lat, lon = ui.getLatLon(DEFAULT_LAT, DEFAULT_LON)
-  return teleportTo(lat, lon, nil, 'start')
+  local ok = teleportTo(lat, lon, nil, 'start')
+  if ok then mpsession.startLocation(false) end
+  return ok
 end
 local function startTeleport()
   local choice = levelinfo.chosen()
   local id = levelinfo.placeId(choice)
   local p = id and places.find(id)
-  if p then return teleportTo(p.lat, p.lon, p.name, 'start') end
+  if p then
+    local ok = teleportTo(p.lat, p.lon, p.name, 'start')
+    if ok then mpsession.keepJoinLocation() end
+    return ok
+  end
   if choice == levelinfo.RANDOM and net.isConnected() then
+    mpsession.keepJoinLocation() -- an explicit startup choice, even while the random-place reply is pending
     st.randomStart = { id = nextId(), t0 = st.clock }
     net.send({ type = 'random_place', id = st.randomStart.id })
     setStatus('Picking a random place...')
@@ -3504,6 +3517,7 @@ teleportTo = function(lat, lon, name, kind, heading)
   st.placeSnapped = place ~= nil and not (okA and adLat)
   st.teleportRetry = nil       -- (a new teleport replaces a failed one's retry)
   if requestAnchor(aLat, aLon, 'teleport', cx, cy, place) then
+    if kind == 'teleport' then mpsession.keepJoinLocation() end -- a delayed join invitation must not undo Go
     -- (degrees clockwise from true north) for this request only: taken when its anchor commits (commitTeleport), so a
     -- placement before that (the level start's flat ground) or another request never uses it (Codex on 2ffc2fcc)
     local h = places.validHeading(heading)

@@ -61,7 +61,7 @@ local groundOk = true
 tp.groundReady = function() return groundOk end
 local asked = {}
 beamngEarth_core = { rebaseTo = function(lat, lon) asked.rebase = { lat, lon } end,
-  teleport = function(lat, lon) asked.go = { lat, lon } end }
+  teleport = function(lat, lon) asked.go = { lat, lon }; return true end }
 local anchor = { lat = 36.5, lon = -118.1 }
 function anchor:enuToGeodetic(x, y) return self.lat + y / 1e5, self.lon + x / 1e5, 0 end
 function anchor:worldToGeodetic(x, y, z) return self:enuToGeodetic(x, y, z) end
@@ -70,6 +70,7 @@ local mine = car(20, 1, true)
 local other = car(21, 2, false)
 local stranger = car(22, 3, false)
 ms.onPostJoin()
+ms.startLocation(false)
 ms.update(0.1, anchor, { x = 100, y = 0, z = 0 })
 T.check(handlers.bngeAnchors and handlers.bngeGoTo, 'the plugin\'s events handled')
 T.check(#sent == 1 and sent[1].name == 'bngePose' and sent[1].data:find('"joined":true', 1, true)
@@ -158,9 +159,11 @@ for _, bad in ipairs({ 0 / 0, math.huge, 91, 'nan' }) do
 end
 decoded.t = { lat = 36.7, lon = -118.3 }
 handlers.bngeGoTo('t')
+ms.update(0.01, anchor, { x = 100, y = 0, z = 0 })
 T.check(asked.go and asked.go[1] == 36.7 and asked.go[2] > -118.3, 'go-to: beside the other player')
 asked.go = nil
 handlers.bngeGoTo('t')
+ms.update(0.01, anchor, { x = 100, y = 0, z = 0 })
 T.check(asked.go == nil, 'go-to once a session')
 
 -- other players' cars off our block float (gravity off, left out of the collision foci), on it land again
@@ -293,8 +296,12 @@ T.check(ms.adoptAnchor(40, -111.9) == nil, 'adoptAnchor: none (shared world buil
 ms.reset()
 T.check(stranger.active == 1 and next(ms.state().deactivated) == nil, 'reset: the cars back on')
 decoded.dateLineGo = { lat = 0, lon = 179.99999 }
+ms.onPostJoin()
+ms.startLocation(false)
 handlers.bngeGoTo('dateLineGo')
+ms.update(0.01, anchor, { x = 100, y = 0, z = 0 })
 T.check(asked.go and asked.go[2] >= -180 and asked.go[2] < -179.99, 'go-to offset wraps at the date line')
+ms.reset() -- the invitation update must not leave hidden cars in the damage fixture below
 -- copies repaired: BeamMP's full-damage message for another player's car is kept, and put on once the car is
 -- SYNC_FAR_M from our camera (near us it keeps what our game worked out); its vehicle Lua checks it first (beams
 -- broken here only: reset, then the owner's state REPAIR_FRAMES frames later)
@@ -488,5 +495,102 @@ do
   ms.setRelease('bad')
   T.check(ms.ownRelease() == nil, 'a malformed one: none')
   guihooks = gh0
+end
+do -- Returning players choose; early/late invitations and old dialogs cannot override that choice.
+  local oldGh, oldCore = guihooks, beamngEarth_core
+  local dialogs, closed, moves, accept = {}, 0, {}, true
+  guihooks = { trigger = function(event, ...)
+    if event == 'ConfirmationDialogOpen' then dialogs[#dialogs + 1] = { ... }
+    elseif event == 'ConfirmationDialogClose' then closed = closed + 1 end
+  end }
+  beamngEarth_core = { teleport = function(lat, lon, name, opts)
+    moves[#moves + 1] = { lat = lat, lon = lon, opts = opts }
+    return accept
+  end }
+  local function update(dt) ms.update(dt or 0.01, anchor, { x = 100, y = 0, z = 103 }) end
+  local function click(dialog, choice)
+    assert(loadstring(dialog[choice == 'others' and 4 or 6]))()
+  end
+  local function returning(beforePostJoin)
+    ms.reset(); dialogs, moves, closed = {}, {}, 0
+    if beforePostJoin then ms.startLocation(true) end
+    ms.onPostJoin()
+    if not beforePostJoin then ms.startLocation(true) end
+    handlers.bngeGoTo('t'); update()
+  end
+  for _, beforePostJoin in ipairs({ true, false }) do
+    returning(beforePostJoin)
+    T.check(#moves == 0 and #dialogs == 1, 'saved start before/after PostJoin: invitation asks instead of moving')
+    local d = dialogs[1]
+    T.check(d[3] == 'Join the others' and d[5] == 'Resume at saved location', 'dialog offers both destinations')
+    handlers.bngeGoTo('dateLineGo'); update()
+    T.check(#dialogs == 1 and #moves == 0, 'duplicate invitations cannot replace or repeat an open choice')
+    click(d, 'saved'); update()
+    ms.onPostJoin(); handlers.bngeGoTo('t'); update()
+    T.check(#moves == 0 and #dialogs == 1, 'resume keeps the saved spot through late invitations and duplicate PostJoin')
+  end
+
+  returning(false)
+  local savedDialog = dialogs[1]
+  click(savedDialog, 'others'); update()
+  T.check(#moves == 1 and moves[1].lat == decoded.t.lat and moves[1].lon > decoded.t.lon
+    and moves[1].opts.record == false, 'join chooses the meeting spot with the existing separation offset')
+  handlers.bngeGoTo('t'); click(savedDialog, 'others'); ms.onPostJoin(); update()
+  T.check(#moves == 1, 'a chosen meeting spot is applied once despite repeated packets, hooks and callbacks')
+
+  returning(true); accept = false
+  click(dialogs[1], 'others'); update()
+  T.check(#moves == 1 and not ms.state().wentTo, 'a temporarily rejected teleport does not consume the choice')
+  update(); T.check(#moves == 1, 'failed teleport retries are paced')
+  accept = true; update(ms.POSE_S)
+  T.check(#moves == 2 and ms.state().wentTo, 'the chosen meeting destination retries when core can accept it')
+
+  returning(false)
+  local stale = dialogs[1]
+  ms.keepJoinLocation(); click(stale, 'others'); handlers.bngeGoTo('t'); update()
+  T.check(#moves == 0 and closed == 1, 'an explicit destination closes the prompt and rejects its stale callback')
+  local sentBefore = #sent
+  ms.onPostJoin(); update(ms.POSE_S)
+  T.check(#sent > sentBefore and sent[#sent].data:find('"joined":false', 1, true),
+    'an explicit destination does not request another meeting invitation')
+
+  returning(false); stale = dialogs[1]
+  ms.reset(); click(stale, 'others'); update()
+  T.check(#moves == 0 and closed == 1, 'leaving closes the prompt and invalidates its buttons')
+  ms.onPostJoin(); ms.startLocation(true); handlers.bngeGoTo('t'); update()
+  click(stale, 'others'); update()
+  T.check(#moves == 0 and #dialogs == 2, 'a previous session button cannot answer the next session prompt')
+  click(dialogs[2], 'others'); update()
+  T.check(#moves == 1, 'the new session choice still works')
+
+  ms.reset(); dialogs, moves = {}, {}
+  ms.onPostJoin(); handlers.bngeGoTo('t'); update()
+  T.check(#moves == 0 and #dialogs == 0, 'an early invitation waits until core knows the startup destination')
+  ms.startLocation(true); update()
+  T.check(#moves == 0 and #dialogs == 1, 'a saved location discovered after the invitation still gets a choice')
+
+  ms.reset(); dialogs, moves = {}, {}
+  ms.startLocation(true); handlers.bngeGoTo('t'); update()
+  T.check(#dialogs == 0 and #moves == 0, 'the dialog waits until BeamMP finishes joining')
+  ms.onPostJoin(); update()
+  T.check(#dialogs == 1 and #moves == 0, 'an invitation before PostJoin is preserved')
+
+  ms.reset(); dialogs, moves = {}, {}
+  ms.onPostJoin(); ms.startLocation(false); handlers.bngeGoTo('t'); update()
+  T.check(#dialogs == 0 and #moves == 1, 'a new player without a saved location still joins the others automatically')
+  ms.reset(); dialogs, moves = {}, {}
+  ms.startLocation(true); ms.onPostJoin(); update(ms.POSE_S)
+  T.check(#dialogs == 0 and #moves == 0, 'no meeting invitation: stay at the saved location without a prompt')
+
+  -- A teleport before PostJoin already owns the camera; never move it back to the anchor origin.
+  local oldBe, oldCam, oldGet = be, core_camera, getPlayerVehicle
+  local moved = false
+  be = { getSurfaceHeightBelow = function() return 100 end }
+  core_camera = { setPosRot = function() moved = true end }
+  getPlayerVehicle = function() return nil end
+  ms.onTeleport(); ms.onPostJoin(); ms.placeCamera({ x = 900, y = 700, z = 103 })
+  T.check(not moved, 'PostJoin keeps the camera already placed at the saved road')
+  be, core_camera, getPlayerVehicle = oldBe, oldCam, oldGet
+  ms.reset(); guihooks, beamngEarth_core = oldGh, oldCore
 end
 T.done('test_mpsession')

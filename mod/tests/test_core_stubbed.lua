@@ -1188,4 +1188,60 @@ do
   T.check(core.headingDir(nil, x, y) == nil and core.headingDir(0 / 0, x, y) == nil, 'no heading: nothing to turn to')
   stH.anchor, veh.getDirectionVector = savedA, savedDir
 end
+do -- The join choice uses the actual startup source, before this join writes any default position.
+  local ms, places, li = require('beamngEarth/mpsession'), require('beamngEarth/places'), require('beamngEarth/levelinfo')
+  local net, ui = require('beamngEarth/net'), require('beamngEarth/ui')
+  local old = { pos = places.lastPosition, recent = places.recentList, find = places.find, chosen = li.chosen,
+    connected = net.isConnected, send = net.send, has = ui.hasLatLon, ll = ui.getLatLon,
+    start = ms.startLocation, keep = ms.keepJoinLocation }
+  local pos, recent, choice, connected = { lat = 35.5, lon = 139.7, heading = 72 }, {}, li.DEFAULT, true
+  local starts, keeps, requests = {}, 0, {}
+  places.lastPosition = function() return pos end
+  places.recentList = function() return recent end
+  places.find = function(id) return id == 7 and { lat = 48.8, lon = 2.3, name = 'Chosen place' } or nil end
+  li.chosen = function() return choice end
+  net.isConnected = function() return connected end
+  net.send = function(msg) requests[#requests + 1] = msg end
+  ui.hasLatLon = function() return false end
+  ui.getLatLon = function() return 36.5, -118.1 end
+  ms.startLocation = function(v) starts[#starts + 1] = v; old.start(v) end
+  ms.keepJoinLocation = function() keeps = keeps + 1; old.keep() end
+  local function start()
+    ms.reset(); starts, keeps, requests = {}, 0, {}
+    core.onClientStartMission()
+    for _, msg in ipairs(requests) do if msg.type == 'prepare_anchor' then return msg end end
+  end
+  local req = start()
+  T.check(#starts == 1 and starts[1] == true and keeps == 0 and req,
+    'a saved position starts there and offers the BeamMP meeting choice')
+  local lat, lon = pos.lat, pos.lon
+  if core.SNAP_TELEPORTS then lat, lon = geodesy.snapAnchor(lat, lon) end
+  T.near(req.lat, lat, 1e-6, 'resume retains the existing snapped latitude')
+  T.near(req.lon, lon, 1e-6, 'resume retains the existing snapped longitude')
+  T.check(core._state().headingFor.heading == pos.heading, 'saved heading remains attached to the startup request')
+  core.onBeamMPPostJoin()
+  T.check(core.teleport(48.8, 2.3) and keeps == 1, 'an explicit Go locks the destination against late invitations')
+  connected = false
+  T.check(not core.teleport(40, -90) and keeps == 1, 'a rejected Go does not lock a new choice')
+  connected = true
+
+  pos, recent = nil, { { lat = 40.1, lon = -111.9, name = 'Recent' } }
+  req = start()
+  T.check(req and #starts == 1 and starts[1] == true, 'the recent-place startup fallback also offers a choice')
+  recent = {}
+  req = start()
+  T.check(req and #starts == 1 and starts[1] == false, 'a first-time default start keeps automatic meeting behavior')
+  choice = li.PREFIX .. '7'
+  req = start()
+  T.check(req and keeps == 1 and #starts == 0, 'an explicitly selected saved place is protected')
+  choice = li.RANDOM
+  start()
+  T.check(keeps == 1 and #starts == 0 and requests[#requests].type == 'random_place',
+    'Random is protected while its destination reply is still pending')
+
+  ms.reset()
+  places.lastPosition, places.recentList, places.find, li.chosen = old.pos, old.recent, old.find, old.chosen
+  net.isConnected, net.send, ui.hasLatLon, ui.getLatLon = old.connected, old.send, old.has, old.ll
+  ms.startLocation, ms.keepJoinLocation = old.start, old.keep
+end
 T.done('test_core_stubbed')
